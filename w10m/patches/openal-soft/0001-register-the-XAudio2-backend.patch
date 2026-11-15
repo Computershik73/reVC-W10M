@@ -1,0 +1,25 @@
+diff --git a/alc/alc.cpp b/alc/alc.cpp
+index b55fce8..571721b 100644
+--- a/alc/alc.cpp
++++ b/alc/alc.cpp
+@@ -122,6 +122,9 @@
+ #if HAVE_ALSA
+ #include "backends/alsa.h"
+ #endif
++#if HAVE_XAUDIO2
++#include "xaudio2_backend.h"
++#endif
+ #if HAVE_WASAPI
+ #include "backends/wasapi.h"
+ #endif
+@@ -217,6 +220,10 @@ struct BackendInfo {
+ };
+ 
+ std::array BackendList{
++#if HAVE_XAUDIO2
++    /* Windows 10 Mobile (reVC-W10M, w10m/openal): the backend that plays on the phones. */
++    BackendInfo{"xaudio2", XAudio2BackendFactory::getFactory},
++#endif
+ #if HAVE_PIPEWIRE
+     BackendInfo{"pipewire", PipeWireBackendFactory::getFactory},
+ #endif

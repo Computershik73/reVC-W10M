@@ -542,6 +542,8 @@ CMenuManager::CMenuManager()
 #ifdef GAMEPAD_MENU
 #ifdef __SWITCH__
 	m_PrefsControllerType = CONTROLLER_NINTENDO_SWITCH;
+#elif defined(GTA_W10M)
+	m_PrefsControllerType = CONTROLLER_DUALSHOCK2; // the pad the game was made for; the on-screen one follows this setting
 #else
 	m_PrefsControllerType = CONTROLLER_XBOXONE;
 #endif

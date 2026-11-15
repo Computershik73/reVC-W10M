@@ -1,4 +1,10 @@
+#ifdef BONES_AS_ROWS
+// three rows of each bone's matrix: a Direct3D level 9 vertex shader (ANGLE) has 256
+// constants, and 64 whole matrices are that many alone
+uniform vec4 u_boneRows[192];
+#else
 uniform mat4 u_boneMatrices[64];
+#endif
 
 uniform vec3 u_viewVec;
 uniform vec4 u_rampStart;
@@ -17,8 +23,15 @@ main(void)
 	vec3 SkinVertex = vec3(0.0, 0.0, 0.0);
 	vec3 SkinNormal = vec3(0.0, 0.0, 0.0);
 	for(int i = 0; i < 4; i++){
+#ifdef BONES_AS_ROWS
+		int b = int(in_indices[i])*3;
+		vec4 p = vec4(in_pos, 1.0);
+		SkinVertex += vec3(dot(u_boneRows[b], p), dot(u_boneRows[b+1], p), dot(u_boneRows[b+2], p)) * in_weights[i];
+		SkinNormal += vec3(dot(u_boneRows[b].xyz, in_normal), dot(u_boneRows[b+1].xyz, in_normal), dot(u_boneRows[b+2].xyz, in_normal)) * in_weights[i];
+#else
 		SkinVertex += (u_boneMatrices[int(in_indices[i])] * vec4(in_pos, 1.0)).xyz * in_weights[i];
 		SkinNormal += (mat3(u_boneMatrices[int(in_indices[i])]) * in_normal) * in_weights[i];
+#endif
 	}
 
 	vec4 Vertex = u_world * vec4(SkinVertex, 1.0);

@@ -1,0 +1,5 @@
+# fetched sources, objects, the staged package, the tests' builds
+/work/
+# packages, the certificate that goes out with them, linker maps
+/builds/
+__pycache__/

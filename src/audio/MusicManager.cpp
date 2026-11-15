@@ -26,6 +26,10 @@
 extern "C" void WaitVBlank(void);
 #endif
 
+#ifdef GTA_W10M
+int32 W10M_TakeRadioStep(void); // skel/w10m/w10m.cpp
+#endif
+
 #if !defined FIX_BUGS && (defined RADIO_SCROLL_TO_PREV_STATION || defined RADIO_OFF_TEXT)
 static_assert(false, "R*'s radio implementation is quite buggy, RADIO_SCROLL_TO_PREV_STATION and RADIO_OFF_TEXT won't work without FIX_BUGS");
 #endif
@@ -602,6 +606,24 @@ cMusicManager::ServiceGameMode()
 						}
 					}
 				}
+#endif
+#ifdef GTA_W10M
+				// The on-screen pad's radio buttons (skel/w10m): a station on, or one back, as the
+				// mouse wheel does below
+				int32 padRadioStep = W10M_TakeRadioStep();
+				if (padRadioStep != 0 && vehicle && !CPad::GetPad(0)->ArePlayerControlsDisabled()) {
+					if (!UsesPoliceRadio(vehicle) && !UsesTaxiRadio(vehicle)) {
+						gNumRetunePresses += padRadioStep;
+						gRetuneCounter = RETUNE_TIME;
+						RadioStaticCounter = 0;
+						if (padRadioStep < 0) {
+							int track = gNumRetunePresses + vehicle->m_nRadioStation;
+							while(track < 0) track += NUM_RADIOS + 1;
+							while(track >= NUM_RADIOS + 1) track -= NUM_RADIOS + 1;
+							if(!DMAudio.IsMP3RadioChannelAvailable() && track == USERTRACK) gNumRetunePresses--;
+						}
+					}
+				} else
 #endif
 				if (CPad::GetPad(0)->ChangeStationJustDown() && vehicle) {
 					if (!UsesPoliceRadio(vehicle) && !UsesTaxiRadio(vehicle)) {

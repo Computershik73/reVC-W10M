@@ -1,0 +1,182 @@
+reVC for Windows 10 Mobile
+==========================
+
+Grand Theft Auto: Vice City on Windows 10 Mobile phones (ARM), with reVC, the reverse-engineered
+source of the game (https://github.com/mrxenginner/reVC), built on its Android fork
+(https://github.com/codepdbh/revc-android-port-evolved).
+
+The package has no game data in it. You need your own copy of Grand Theft Auto: Vice City for PC.
+
+INSTALL
+-------
+1. On the phone: Settings > Update & security > For developers > Developer mode.
+2. Trust the signing certificate: copy Computershik.cer to the phone and open it in Files
+   (or install it through the Device Portal / Interop Tools). Without it the installer refuses
+   the package as untrusted. If you already installed another app signed by Computershik
+   (Gecko, Butterscotch), it is already trusted.
+3. Install reVC_<version>_ARM.appx: open it in Files on the phone, or use the Device Portal
+   (Apps > Install app). Nothing else is needed: the C++ runtime is inside the package and no
+   interop unlock is required.
+
+THE GAME'S FILES
+----------------
+1. On your PC, find the folder Grand Theft Auto: Vice City is installed in (from a disc, Steam
+   or another store): the one with the folders audio, data, models, anim, txd and TEXT.
+2. Connect the phone by USB and copy that whole folder to it, to Documents or to the SD card.
+   It is about 1.5 GB.
+3. Start reVC, tap "Choose the game's folder" and pick that folder. The game is copied into the
+   app; this takes several minutes (a quarter of an hour on a Lumia 650), keep the app open: it
+   keeps the screen on. If the copy is cut short, open the app again and it goes on from where
+   it stopped. The app needs that much free space again. Afterwards the folder you copied can
+   be deleted.
+4. The game starts. From then on the app goes straight into it.
+
+The movies folder and the Windows program itself (.exe, .dll, mss) are not copied: they are
+not used. Saves and settings are kept in the app (userfiles, reVC.ini) and stay when you replace
+the game's files. If the game does not get as far as its menu, the next start shows the first
+screen again, with "Play" and "Replace the game's files".
+
+CONTROLS
+--------
+The on-screen buttons and the game's own hints use the same names: PlayStation's to begin
+with, or Xbox's (A B X Y, LB RB LT RT) after a tap on the PS / XBOX button at the top right of
+the menus. (The same setting, with more controller types, is in the game's Options > Controller
+setup > Gamepad settings.) With PlayStation's names:
+
+    left half of the screen     move (a stick appears where the thumb lands)
+    right half of the screen    turn the camera
+    X (cross)                   sprint / accelerate
+    square                      jump / brake, reverse
+    circle                      fire
+    triangle                    get into or out of a vehicle
+    L1                          answer the phone / change the radio station
+    the two with a note         in a vehicle: the radio, a station back and a station on
+    R1                          aim, lock on / handbrake
+    L2, R2                      previous and next weapon / look left and right
+    L3                          crouch / horn
+    R3                          look behind / start a vehicle's missions (taxi, ambulance...)
+    CAM                         change the camera
+    the three lines             pause
+
+In the menus, tap an entry, or use the arrows with the cross (select) and the triangle (back).
+During a cutscene one button skips it. The phone's Back button is Escape: pause in the game,
+back in the menus.
+
+A Bluetooth or USB gamepad takes over when it is connected, and the on-screen buttons go away.
+A keyboard works with the game's PC keys.
+
+RESOLUTION
+----------
+The button at the top right of the menus (RES) sets what the game is drawn at: at most 720
+lines (the default; 432 on the slower phones below), or 100, 75, 60 or 50 per cent of the
+screen. It takes effect the next time the app starts. Fewer pixels are faster.
+
+SLOWER PHONES
+-------------
+On phones whose graphics chip stops at Direct3D level 9 (the Lumia 550, 650 and the like), the
+first start keeps the screen black for a little over a minute while the game's shaders are
+prepared; they are kept, and later starts take a quarter of a minute. The game itself runs at
+about 20 frames a second standing in a street on a Lumia 650 and about 10 in traffic: the menus
+are fine, the city is slow. To spare such a phone the game is drawn at 432 lines there unless
+RES says otherwise (at 720 lines it is slower), draws distant vehicles in low
+detail, uses its plain colour filter and its shortest draw distance (the last two can be
+changed in Options > Display). On an HP Elite x3 it runs at the game's full 30 frames a
+second.
+
+IF SOMETHING GOES WRONG
+-----------------------
+The app writes revc.log (and revc.prev.log, the run before) into its LocalState folder; the
+Device Portal's File explorer shows it (App file explorer > LocalAppData > reVC > LocalState).
+A crash is in it as "crash: exception ... at reVC.exe+0x...".
+
+
+reVC для Windows 10 Mobile
+==========================
+
+Grand Theft Auto: Vice City на телефонах с Windows 10 Mobile (ARM). Работает на reVC, исходном
+коде игры, восстановленном обратной разработкой (https://github.com/mrxenginner/reVC), на основе
+его форка для Android (https://github.com/codepdbh/revc-android-port-evolved).
+
+Данных игры в пакете нет. Нужна ваша собственная копия Grand Theft Auto: Vice City для ПК.
+
+УСТАНОВКА
+---------
+1. На телефоне: Параметры > Обновление и безопасность > Для разработчиков > Режим разработчика.
+2. Доверьте сертификат подписи: скопируйте Computershik.cer на телефон и откройте его в
+   Проводнике (или установите через Device Portal / Interop Tools). Без него установщик отклонит
+   пакет как недоверенный. Если у вас уже стоит другое приложение с подписью Computershik
+   (Gecko, Butterscotch), сертификат уже доверен.
+3. Установите reVC_<версия>_ARM.appx: откройте его в Проводнике на телефоне или через Device
+   Portal (Apps > Install app). Больше ничего не нужно: библиотеки C++ лежат внутри пакета,
+   interop unlock не требуется.
+
+ФАЙЛЫ ИГРЫ
+----------
+1. Найдите на ПК папку, в которую установлена Grand Theft Auto: Vice City (с диска, из Steam
+   или другого магазина): ту, где лежат папки audio, data, models, anim, txd и TEXT.
+2. Подключите телефон по USB и скопируйте эту папку целиком в Документы или на SD-карту.
+   Это около 1,5 ГБ.
+3. Запустите reVC, нажмите «Выбрать папку с игрой» и укажите эту папку. Игра скопируется внутрь
+   приложения; это займёт несколько минут (на Lumia 650 — четверть часа), не закрывайте
+   приложение: экран оно не гасит. Если копирование прервалось, откройте приложение снова, и
+   оно продолжит с того же места. Нужно ещё столько же свободного места. После этого
+   скопированную папку можно удалить.
+4. Игра запустится. Дальше приложение сразу открывает её.
+
+Папка movies и сама программа для Windows (.exe, .dll, mss) не копируются: они не используются.
+Сохранения и настройки хранятся в приложении (userfiles, reVC.ini) и остаются при замене файлов
+игры. Если игра не дошла до своего меню, при следующем запуске снова откроется первый экран, с
+кнопками «Играть» и «Заменить файлы игры».
+
+УПРАВЛЕНИЕ
+----------
+На экранных кнопках и в подсказках самой игры одни и те же названия: сначала PlayStation,
+а после нажатия кнопки PS / XBOX справа вверху в меню — Xbox (A B X Y, LB RB LT RT). (Та же
+настройка, с другими типами геймпадов, есть в игре: Настройки > Управление > Gamepad settings.)
+С названиями PlayStation:
+
+    левая половина экрана       движение (стик появляется там, куда лёг палец)
+    правая половина экрана      поворот камеры
+    X (крест)                   бег / газ
+    квадрат                     прыжок / тормоз, задний ход
+    круг                        огонь
+    треугольник                 сесть в транспорт или выйти
+    L1                          ответить на звонок / сменить радиостанцию
+    две кнопки с нотой          в транспорте: радио, станция назад и станция вперёд
+    R1                          прицел, захват цели / ручной тормоз
+    L2, R2                      предыдущее и следующее оружие / взгляд влево и вправо
+    L3                          присесть / сигнал
+    R3                          взгляд назад / задания транспорта (такси, скорая...)
+    CAM                         сменить камеру
+    три полоски                 пауза
+
+В меню нажимайте на пункт или пользуйтесь стрелками, крестом (выбор) и треугольником (назад).
+Во время заставки одна кнопка пропускает её. Кнопка «Назад» телефона работает как Escape: пауза
+в игре, возврат в меню.
+
+Геймпад по Bluetooth или USB берёт управление на себя, когда подключён, и экранные кнопки
+исчезают. Клавиатура работает с клавишами версии для ПК.
+
+РАЗРЕШЕНИЕ
+----------
+Кнопка справа вверху в меню (RES) задаёт, в каком разрешении рисуется игра: не более 720 строк
+(по умолчанию; 432 на телефонах послабее, о них ниже) либо 100, 75, 60 или 50 процентов экрана.
+Действует со следующего запуска приложения. Меньше пикселей — быстрее.
+
+ТЕЛЕФОНЫ ПОСЛАБЕЕ
+-----------------
+На телефонах, чей графический чип не идёт дальше Direct3D уровня 9 (Lumia 550, 650 и подобные),
+при первом запуске экран чуть больше минуты остаётся чёрным, пока готовятся шейдеры игры; они
+сохраняются, и следующие запуски занимают четверть минуты. Сама игра на Lumia 650 идёт со
+скоростью около 20 кадров в секунду, если стоять на улице, и около 10 в потоке машин: меню
+работает нормально, город — медленно. Чтобы поберечь такой телефон, игра на нём рисуется в 432
+строки, если кнопкой RES не выбрано иное (в 720 строк она медленнее), рисует
+дальние машины упрощённо, включает простой цветовой фильтр и наименьшую дальность прорисовки
+(последние два можно изменить в настройках экрана игры). На HP Elite x3 игра идёт на полных 30
+кадрах в секунду.
+
+ЕСЛИ ЧТО-ТО НЕ ТАК
+------------------
+Приложение пишет revc.log (и revc.prev.log, предыдущий запуск) в свою папку LocalState; его
+видно в File explorer Device Portal (App file explorer > LocalAppData > reVC > LocalState).
+Падение записано там строкой «crash: exception ... at reVC.exe+0x...».

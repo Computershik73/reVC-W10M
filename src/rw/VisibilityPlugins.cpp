@@ -138,7 +138,14 @@ CVisibilityPlugins::InsertAtomicIntoBoatSortedList(RpAtomic *a, float dist)
 
 // can't increase this yet unfortunately...
 // probably have to fix fading for this so material alpha isn't overwritten
+#ifdef GTA_W10M
+// A vehicle in full detail is sixty to a hundred draws, its low-detail model a handful: on a
+// phone where a draw is what costs, the full model is for the vehicles close by (skel/w10m)
+float W10M_VehicleDetail = 1.0f;
+#define VEHICLE_LODDIST_MULTIPLIER (TheCamera.GenerationDistMultiplier * W10M_VehicleDetail)
+#else
 #define VEHICLE_LODDIST_MULTIPLIER (TheCamera.GenerationDistMultiplier)
+#endif
 
 void
 CVisibilityPlugins::SetRenderWareCamera(RwCamera *camera)
@@ -154,7 +161,7 @@ CVisibilityPlugins::SetRenderWareCamera(RwCamera *camera)
 
 	ms_vehicleLod0Dist = sq(70.0f * VEHICLE_LODDIST_MULTIPLIER);
 	ms_vehicleLod1Dist = sq(90.0f * VEHICLE_LODDIST_MULTIPLIER);
-	ms_vehicleFadeDist = sq(100.0f * VEHICLE_LODDIST_MULTIPLIER);
+	ms_vehicleFadeDist = sq(100.0f * TheCamera.GenerationDistMultiplier);
 	ms_bigVehicleLod0Dist = sq(60.0f * VEHICLE_LODDIST_MULTIPLIER);
 	ms_bigVehicleLod1Dist = sq(150.0f * VEHICLE_LODDIST_MULTIPLIER);
 	ms_pedLod1Dist = sq(60.0f * TheCamera.LODDistMultiplier);

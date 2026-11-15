@@ -1354,6 +1354,12 @@ if(gbRenderFadingInEntities)
 }
 #endif
 
+#ifdef GTA_W10M
+#define W10M_TIMED(name, what) do { tbStartTimer(0, name); what; tbEndTimer(name); } while(0)
+#else
+#define W10M_TIMED(name, what) do { what; } while(0)
+#endif
+
 void
 RenderScene(void)
 {
@@ -1364,18 +1370,18 @@ RenderScene(void)
 	}
 #endif
 	PUSH_RENDERGROUP("RenderScene");
-	CClouds::Render();
-	DoRWRenderHorizon();
-	CRenderer::RenderRoads();
+	// timed one by one, for the phone's log (skel/w10m): the scene is where a slow phone's frame goes
+	W10M_TIMED("Sky", CClouds::Render(); DoRWRenderHorizon());
+	W10M_TIMED("Roads", CRenderer::RenderRoads());
 	CCoronas::RenderReflections();
-	CRenderer::RenderEverythingBarRoads();
+	W10M_TIMED("World", CRenderer::RenderEverythingBarRoads());
 	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
-	CWaterLevel::RenderWater();
+	W10M_TIMED("Water", CWaterLevel::RenderWater());
 	CRenderer::RenderBoats();
 	CRenderer::RenderFadingInUnderwaterEntities();
 	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
-	CWaterLevel::RenderTransparentWater();
-	CRenderer::RenderFadingInEntities();
+	W10M_TIMED("WaterTransparent", CWaterLevel::RenderTransparentWater());
+	W10M_TIMED("FadingIn", CRenderer::RenderFadingInEntities());
 	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
 	CWeather::RenderRainStreaks();
 	CCoronas::RenderSunReflection();
@@ -1632,20 +1638,30 @@ Idle(void *arg)
 		tbEndTimer("RenderScene");
 
 #ifdef EXTENDED_PIPELINES
-		CustomPipes::EnvMapRender();
+		W10M_TIMED("EnvMap", CustomPipes::EnvMapRender());
 #endif
 
 		RenderDebugShit();
-		RenderEffects();
+		W10M_TIMED("RenderEffects", RenderEffects());
 
 		if((TheCamera.m_BlurType == MOTION_BLUR_NONE || TheCamera.m_BlurType == MOTION_BLUR_LIGHT_SCENE) &&
 		   TheCamera.m_ScreenReductionPercentage > 0.0f)
 		        TheCamera.SetMotionBlurAlpha(150);
 
 #ifdef SCREEN_DROPLETS
+#ifdef GTA_W10M
+		// The picture so far is copied for the drops to refract: 13 ms of a slow phone's
+		// frame, here spent only while there are drops on the screen
+		ScreenDroplets::Process();
+		if(ScreenDroplets::ms_numDrops > 0){
+			W10M_TIMED("BackBuffer", CPostFX::GetBackBuffer(Scene.camera));
+			W10M_TIMED("Droplets", ScreenDroplets::Render());
+		}
+#else
 		CPostFX::GetBackBuffer(Scene.camera);
 		ScreenDroplets::Process();
 		ScreenDroplets::Render();
+#endif
 #endif
 
 		tbStartTimer(0, "RenderMotionBlur");

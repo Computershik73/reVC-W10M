@@ -85,6 +85,14 @@ class CText
 	bool bIsMissionTextLoaded;
 	char szMissionTableName[8];
 	CMissionTextOffsets MissionTextOffsets;
+#ifdef GTA_W10M
+	// The American text, for a line the chosen language's file does not have: reVC's own menu
+	// entries (graphics, the gamepad's menu) are missing from its Russian file, and showed as
+	// "FET_AGS missing".
+	CKeyArray fallback_keyArray;
+	CData fallback_data;
+	void LoadFallback(void);
+#endif
 public:
 	CText(void);
 	void Load(void);

@@ -1,0 +1,1639 @@
+diff --git a/src/gl/gl3device.cpp b/src/gl/gl3device.cpp
+index 6a4c8dd..b921e6c 100644
+--- a/src/gl/gl3device.cpp
++++ b/src/gl/gl3device.cpp
+@@ -26,6 +26,8 @@ GlGlobals glGlobals;
+ Gl3Caps gl3Caps;
+ // terrible hack for GLES
+ bool32 needToReadBackTextures;
++// skin matrices go to the shaders as rows (BONES_AS_ROWS), see initOpenGL
++bool32 bonesAsRows;
+ 
+ int32   alphaFunc;
+ float32 alphaRef;
+@@ -91,6 +93,27 @@ const char *shaderDecl100es =
+ "#define FRAGCOLOR(c) (gl_FragColor = c)\n"
+ "precision highp float;\n"
+ "precision highp int;\n";
++// The same where a vertex shader has few uniforms (see bonesAsRows)
++const char *shaderDecl100es_rows =
++"#version 100\n"
++"#define GL2\n"
++"#define BONES_AS_ROWS\n"
++"#define texture texture2D\n"
++"#define VSIN(index) attribute\n"
++"#define VSOUT varying\n"
++"#define FSIN varying\n"
++"#define FRAGCOLOR(c) (gl_FragColor = c)\n"
++"precision highp float;\n"
++"precision highp int;\n";
++// OpenGL ES 3.0: nothing in the shaders needs 3.1, and ANGLE on Direct3D 11 stops at 3.0
++const char *shaderDecl300es =
++"#version 300 es\n"
++"#define VSIN(index) layout(location = index) in\n"
++"#define VSOUT out\n"
++"#define FSIN in\n"
++"#define FRAGCOLOR(c) (fragColor = c)\n"
++"precision highp float;\n"
++"precision highp int;\n";
+ const char *shaderDecl310es =
+ "#version 310 es\n"
+ "#define VSIN(index) layout(location = index) in\n"
+@@ -106,6 +129,7 @@ const char *shaderDecl;
+ //#define RW_GL_USE_UBOS
+ 
+ static GLuint vao;
++static GLADloadproc glLoader;	// what the window system loads functions by name with
+ #ifdef RW_GL_USE_UBOS
+ static GLuint ubo_state, ubo_scene, ubo_object;
+ #endif
+@@ -320,6 +344,7 @@ flushGlRenderState(void)
+ 	if(oldGlState.blendEnable != curGlState.blendEnable){
+ 		oldGlState.blendEnable = curGlState.blendEnable;
+ 		(oldGlState.blendEnable ? glEnable : glDisable)(GL_BLEND);
++		perf.blends++;
+ 	}
+ 
+ 	if(oldGlState.srcblend != curGlState.srcblend ||
+@@ -327,19 +352,23 @@ flushGlRenderState(void)
+ 		oldGlState.srcblend = curGlState.srcblend;
+ 		oldGlState.destblend = curGlState.destblend;
+ 		glBlendFunc(oldGlState.srcblend, oldGlState.destblend);
++		perf.blends++;
+ 	}
+ 
+ 	if(oldGlState.depthTest != curGlState.depthTest){
+ 		oldGlState.depthTest = curGlState.depthTest;
+ 		(oldGlState.depthTest ? glEnable : glDisable)(GL_DEPTH_TEST);
++		perf.depths++;
+ 	}
+ 	if(oldGlState.depthFunc != curGlState.depthFunc){
+ 		oldGlState.depthFunc = curGlState.depthFunc;
+ 		glDepthFunc(oldGlState.depthFunc);
++		perf.depths++;
+ 	}
+ 	if(oldGlState.depthMask != curGlState.depthMask){
+ 		oldGlState.depthMask = curGlState.depthMask;
+ 		glDepthMask(oldGlState.depthMask);
++		perf.depths++;
+ 	}
+ 
+ 	if(oldGlState.stencilEnable != curGlState.stencilEnable){
+@@ -370,10 +399,12 @@ flushGlRenderState(void)
+ 	if(oldGlState.cullEnable != curGlState.cullEnable){
+ 		oldGlState.cullEnable = curGlState.cullEnable;
+ 		(oldGlState.cullEnable ? glEnable : glDisable)(GL_CULL_FACE);
++		perf.culls++;
+ 	}
+ 	if(oldGlState.cullFace != curGlState.cullFace){
+ 		oldGlState.cullFace = curGlState.cullFace;
+ 		glCullFace(oldGlState.cullFace);
++		perf.culls++;
+ 	}
+ }
+ 
+@@ -485,6 +516,15 @@ bindTexture(uint32 texid)
+ 	if(prev != texid){
+ 		boundTexture[activeTexture] = texid;
+ 		glBindTexture(GL_TEXTURE_2D, texid);
++		perf.textures++;
++		perf.changed |= 1;
++		if(perf.enabled){
++			static uint32 seenInFrame[4096];
++			if(seenInFrame[texid & 4095] != perf.frame + 1){
++				seenInFrame[texid & 4095] = perf.frame + 1;
++				perf.differentTextures++;
++			}
++		}
+ 	}
+ 	return prev;
+ }
+@@ -525,10 +565,10 @@ setFilterMode(uint32 stage, int32 filter, int32 maxAniso = 1)
+ 			if(natras->filterMode != filter){
+ 				setActiveTexture(stage);
+ 				if(natras->autogenMipmap || natras->numLevels > 1){
+-					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterConvMap_MIP[filter]);
++					perf.samplers++; glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterConvMap_MIP[filter]);
+ 					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterConvMap_NoMIP[filter]);
+ 				}else{
+-					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterConvMap_NoMIP[filter]);
++					perf.samplers++; glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterConvMap_NoMIP[filter]);
+ 					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterConvMap_NoMIP[filter]);
+ 				}
+ 				natras->filterMode = filter;
+@@ -552,7 +592,7 @@ setAddressU(uint32 stage, int32 addressing)
+ 			Gl3Raster *natras = PLUGINOFFSET(Gl3Raster, raster, nativeRasterOffset);
+ 			if(natras->addressU == addressing){
+ 				setActiveTexture(stage);
+-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, addressConvMap[addressing]);
++				perf.samplers++; glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, addressConvMap[addressing]);
+ 				natras->addressU = addressing;
+ 			}
+ 		}
+@@ -569,7 +609,7 @@ setAddressV(uint32 stage, int32 addressing)
+ 			Gl3Raster *natras = PLUGINOFFSET(Gl3Raster, rwStateCache.texstage[stage].raster, nativeRasterOffset);
+ 			if(natras->addressV == addressing){
+ 				setActiveTexture(stage);
+-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, addressConvMap[addressing]);
++				perf.samplers++; glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, addressConvMap[addressing]);
+ 				natras->addressV = addressing;
+ 			}
+ 		}
+@@ -626,20 +666,20 @@ setRasterStage(uint32 stage, Raster *raster)
+ 			uint32 addrV = rwStateCache.texstage[stage].addressingV;
+ 			if(natras->filterMode != filter){
+ 				if(natras->autogenMipmap || natras->numLevels > 1){
+-					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterConvMap_MIP[filter]);
++					perf.samplers++; glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterConvMap_MIP[filter]);
+ 					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterConvMap_NoMIP[filter]);
+ 				}else{
+-					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterConvMap_NoMIP[filter]);
++					perf.samplers++; glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterConvMap_NoMIP[filter]);
+ 					glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterConvMap_NoMIP[filter]);
+ 				}
+ 				natras->filterMode = filter;
+ 			}
+ 			if(natras->addressU != addrU){
+-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, addressConvMap[addrU]);
++				perf.samplers++; glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, addressConvMap[addrU]);
+ 				natras->addressU = addrU;
+ 			}
+ 			if(natras->addressV != addrV){
+-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, addressConvMap[addrV]);
++				perf.samplers++; glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, addressConvMap[addrV]);
+ 				natras->addressV = addrV;
+ 			}
+ 			alpha = natras->hasAlpha;
+@@ -1535,6 +1575,7 @@ static struct {
+ 	{ SDL_GL_CONTEXT_PROFILE_CORE, 3, 3 },
+ 	{ SDL_GL_CONTEXT_PROFILE_CORE, 2, 1 },
+ 	{ SDL_GL_CONTEXT_PROFILE_ES, 3, 1 },
++	{ SDL_GL_CONTEXT_PROFILE_ES, 3, 0 },
+ 	{ SDL_GL_CONTEXT_PROFILE_ES, 2, 0 },
+ 	{ 0, 0, 0 },
+ };
+@@ -1577,6 +1618,7 @@ startSDL2(void)
+ 	}
+ 	ctx = SDL_GL_CreateContext(win);
+ 
++	glLoader = (GLADloadproc)SDL_GL_GetProcAddress;
+ 	if (!((gl3Caps.gles ? gladLoadGLES2Loader : gladLoadGLLoader) ((GLADloadproc) SDL_GL_GetProcAddress, gl3Caps.glversion)) ) {
+ 		RWERROR((ERR_GENERAL, "gladLoadGLLoader failed"));
+ 		SDL_GL_DeleteContext(ctx);
+@@ -1698,6 +1740,7 @@ static struct {
+ 	{ GLFW_OPENGL_API, 3, 3 },
+ 	{ GLFW_OPENGL_API, 2, 1 },
+ 	{ GLFW_OPENGL_ES_API, 3, 1 },
++	{ GLFW_OPENGL_ES_API, 3, 0 },
+ 	{ GLFW_OPENGL_ES_API, 2, 0 },
+ 	{ 0, 0, 0 },
+ };
+@@ -1744,6 +1787,7 @@ startGLFW(void)
+ 	glfwMakeContextCurrent(win);
+ 
+ 	/* Init GLAD */
++	glLoader = (GLADloadproc)glfwGetProcAddress;
+ 	if (!((gl3Caps.gles ? gladLoadGLES2Loader : gladLoadGLLoader) ((GLADloadproc) glfwGetProcAddress, gl3Caps.glversion)) ) {
+ 		RWERROR((ERR_GENERAL, "gladLoadGLLoader failed"));
+ 		glfwDestroyWindow(win);
+@@ -1769,6 +1813,30 @@ stopGLFW(void)
+ }
+ #endif
+ 
++// for the extensions GLAD was not generated with
++static bool32
++hasExtension(const char *name)
++{
++	if(gl3Caps.glversion >= 30){
++		GLint numExt = 0;
++		glGetIntegerv(GL_NUM_EXTENSIONS, &numExt);
++		for(GLint i = 0; i < numExt; i++){
++			const char *ext = (const char*)glGetStringi(GL_EXTENSIONS, i);
++			if(ext && strcmp(ext, name) == 0)
++				return 1;
++		}
++		return 0;
++	}
++	const char *exts = (const char*)glGetString(GL_EXTENSIONS);
++	size_t len = strlen(name);
++	while(exts && (exts = strstr(exts, name)) != nil){
++		if(exts[len] == ' ' || exts[len] == '\0')
++			return 1;
++		exts += len;
++	}
++	return 0;
++}
++
+ static int
+ initOpenGL(void)
+ {
+@@ -1789,13 +1857,67 @@ initOpenGL(void)
+ 	}
+ */
+ 	gl3Caps.dxtSupported = !!GLAD_GL_EXT_texture_compression_s3tc;
++	// ANGLE has the same formats under three names instead of the one
++	if(!gl3Caps.dxtSupported)
++		gl3Caps.dxtSupported = hasExtension("GL_EXT_texture_compression_dxt1") &&
++			hasExtension("GL_ANGLE_texture_compression_dxt3") &&
++			hasExtension("GL_ANGLE_texture_compression_dxt5");
+ 	gl3Caps.astcSupported = !!GLAD_GL_KHR_texture_compression_astc_ldr;
+ 
+ 	glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &gl3Caps.maxAnisotropy);
+ 
++	// Vertex array objects and program binaries are OpenGL ES 3's. ES 2 can have both as
++	// extensions, the functions under their names with OES at the end (ANGLE on Direct3D
++	// level 9 does). Desktop OpenGL 3.3 has the first only.
++	gl3Caps.vertexArrays = gl3Caps.glversion >= 30;
++	gl3Caps.programBinaries = gl3Caps.gles && gl3Caps.glversion >= 30;
++	if(gl3Caps.gles && gl3Caps.glversion < 30 && glLoader){
++		if(hasExtension("GL_OES_vertex_array_object")){
++			glad_glGenVertexArrays = (PFNGLGENVERTEXARRAYSPROC)glLoader("glGenVertexArraysOES");
++			glad_glBindVertexArray = (PFNGLBINDVERTEXARRAYPROC)glLoader("glBindVertexArrayOES");
++			glad_glDeleteVertexArrays = (PFNGLDELETEVERTEXARRAYSPROC)glLoader("glDeleteVertexArraysOES");
++			gl3Caps.vertexArrays = glad_glGenVertexArrays && glad_glBindVertexArray && glad_glDeleteVertexArrays;
++		}
++		if(hasExtension("GL_OES_get_program_binary")){
++			glad_glGetProgramBinary = (PFNGLGETPROGRAMBINARYPROC)glLoader("glGetProgramBinaryOES");
++			glad_glProgramBinary = (PFNGLPROGRAMBINARYPROC)glLoader("glProgramBinaryOES");
++			gl3Caps.programBinaries = glad_glGetProgramBinary && glad_glProgramBinary;
++		}
++	}
++	gl3Caps.verticesFromMemory = gl3Caps.gles && gl3Caps.glversion < 30;
++	// to tell what they are worth: LIBRW_NO_VERTEX_ARRAYS=1, LIBRW_NO_PROGRAM_BINARIES=1,
++	// LIBRW_NO_VERTICES_FROM_MEMORY=1
++	if(getenv("LIBRW_NO_VERTEX_ARRAYS"))
++		gl3Caps.vertexArrays = false;
++	if(getenv("LIBRW_NO_PROGRAM_BINARIES"))
++		gl3Caps.programBinaries = false;
++	if(getenv("LIBRW_NO_VERTICES_FROM_MEMORY"))
++		gl3Caps.verticesFromMemory = false;
++	// LIBRW_NO_SHARED_BUFFERS=1, LIBRW_PAGE_VERTICES=16384
++	gl3Caps.sharedBuffers = gl3Caps.gles && gl3Caps.glversion < 30 && gl3Caps.vertexArrays &&
++		getenv("LIBRW_NO_SHARED_BUFFERS") == nil;
++	if(getenv("LIBRW_PAGE_VERTICES")){
++		int n = atoi(getenv("LIBRW_PAGE_VERTICES"));
++		pageVertices = n < 1024 ? 1024 : n > 65536 ? 65536 : n;
++	}
++
++	// A skin's 64 bone matrices are 256 uniform vectors, and the transform and the lights
++	// some fifty more. A Direct3D level 9 vertex shader (ANGLE on most Windows phones) has
++	// 256 constants in all: there the shaders get three rows of each matrix instead.
++	bonesAsRows = 0;
++	if(gl3Caps.gles && gl3Caps.glversion < 30){
++		GLint maxVectors = 0;
++		glGetIntegerv(GL_MAX_VERTEX_UNIFORM_VECTORS, &maxVectors);
++		bonesAsRows = maxVectors < 320;
++	}
++
+ 	if(gl3Caps.gles){
+-		if(gl3Caps.glversion >= 30)
++		if(gl3Caps.glversion >= 31)
+ 			shaderDecl = shaderDecl310es;
++		else if(gl3Caps.glversion >= 30)
++			shaderDecl = shaderDecl300es;
++		else if(bonesAsRows)
++			shaderDecl = shaderDecl100es_rows;
+ 		else
+ 			shaderDecl = shaderDecl100es;
+ 	}else{
+@@ -1849,6 +1971,8 @@ initOpenGL(void)
+ 		glGenVertexArrays(1, &vao);
+ 		glBindVertexArray(vao);
+ 	}
++	defaultVertexArray = vao;
++	resetVertexArray();
+ 
+ #ifdef RW_GL_USE_UBOS
+ 	glGenBuffers(1, &ubo_state);
+@@ -2130,6 +2254,7 @@ namespace rw {
+ namespace gl3 { 
+ Gl3Caps gl3Caps;
+ bool32 needToReadBackTextures;
++bool32 bonesAsRows;
+ }
+ }
+ #endif
+diff --git a/src/gl/gl3immed.cpp b/src/gl/gl3immed.cpp
+index b66b7e5..464792f 100644
+--- a/src/gl/gl3immed.cpp
++++ b/src/gl/gl3immed.cpp
+@@ -63,6 +63,7 @@ openIm2D(void)
+ 	im2dShader = Shader::create(vs, fs);
+ 	assert(im2dShader);
+ 
++	useDefaultVertexArray();
+ 	glGenBuffers(1, &im2DIbo);
+ 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im2DIbo);
+ 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, STARTINDICES*2, nil, GL_STREAM_DRAW);
+@@ -125,16 +126,71 @@ im2DSetXform(void)
+ //	glUniform4fv(currentShader->uniformLocations[u_xform], 1, xform);
+ }
+ 
++// gl3Caps.verticesFromMemory: the vertices where the application has them. Nothing is bound
++// as the array buffer, and the default vertex array's pointers are into memory; they are read
++// when the draw is made, so the vertices are to stay as they are until then (as RenderWare's
++// own immediate mode asks: until the draw returns, or until im3DEnd).
++static void
++memoryPointers(AttribDesc *attribDescs, int32 numAttribs, void *vertices)
++{
++	AttribDesc *a;
++	useDefaultVertexArray();
++	glBindBuffer(GL_ARRAY_BUFFER, 0);
++	for(a = attribDescs; a != &attribDescs[numAttribs]; a++){
++		glEnableVertexAttribArray(a->index);
++		glVertexAttribPointer(a->index, a->size, a->type, a->normalized,
++		                      a->stride, (uint8*)vertices + a->offset);
++	}
++}
++
++static void
++immediateDone(uint64 t0)
++{
++	if(perf.enabled){
++		perf.immediateNs += perfNow() - t0;
++		perf.immediates++;
++		perf.changed = 0;
++	}
++}
++
++// A buffer orphaned at its full size and then filled in part is the quick way with a desktop
++// driver. ANGLE allocates and clears the full size for it, 360 KB of vertices for every
++// immediate draw: on OpenGL ES the buffer is given what is drawn, in one call.
++static void
++streamData(GLenum target, GLsizeiptr fullSize, GLsizeiptr size, const void *data)
++{
++	if(gl3Caps.gles){
++		glBufferData(target, size, data, GL_STREAM_DRAW);
++		return;
++	}
++	glBufferData(target, fullSize, nil, GL_STREAM_DRAW);
++	glBufferSubData(target, 0, size, data);
++}
++
+ void
+ im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
+ {
++	uint64 t0 = perf.enabled ? perfNow() : 0;
++	useDefaultVertexArray();
++	if(gl3Caps.verticesFromMemory){
++		if(im2dOverrideShader)
++			im2dOverrideShader->use();
++		else
++			im2dShader->use();
++		memoryPointers(im2dattribDesc, 3, vertices);
++		im2DSetXform();
++		flushCache();
++		glDrawArrays(primTypeMap[primType], 0, numVertices);
++		disableAttribPointers(im2dattribDesc, 3);
++		immediateDone(t0);
++		return;
++	}
+ #ifdef RW_GL_USE_VAOS
+ 	glBindVertexArray(im2DVao);
+ #endif
+ 
+ 	glBindBuffer(GL_ARRAY_BUFFER, im2DVbo);
+-	glBufferData(GL_ARRAY_BUFFER, STARTVERTICES*sizeof(Im2DVertex), nil, GL_STREAM_DRAW);
+-	glBufferSubData(GL_ARRAY_BUFFER, 0, numVertices*sizeof(Im2DVertex), vertices);
++	streamData(GL_ARRAY_BUFFER, STARTVERTICES*sizeof(Im2DVertex), numVertices*sizeof(Im2DVertex), vertices);
+ 
+ 	if(im2dOverrideShader)
+ 		im2dOverrideShader->use();
+@@ -151,6 +207,7 @@ im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
+ #ifndef RW_GL_USE_VAOS
+ 	disableAttribPointers(im2dattribDesc, 3);
+ #endif
++	immediateDone(t0);
+ }
+ 
+ void
+@@ -158,17 +215,32 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
+ 	void *vertices, int32 numVertices,
+ 	void *indices, int32 numIndices)
+ {
++	uint64 t0 = perf.enabled ? perfNow() : 0;
++	useDefaultVertexArray();
++	if(gl3Caps.verticesFromMemory){
++		if(im2dOverrideShader)
++			im2dOverrideShader->use();
++		else
++			im2dShader->use();
++		memoryPointers(im2dattribDesc, 3, vertices);
++		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
++		im2DSetXform();
++		flushCache();
++		glDrawElements(primTypeMap[primType], numIndices,
++		               GL_UNSIGNED_SHORT, indices);
++		disableAttribPointers(im2dattribDesc, 3);
++		immediateDone(t0);
++		return;
++	}
+ #ifdef RW_GL_USE_VAOS
+ 	glBindVertexArray(im2DVao);
+ #endif
+ 
+ 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im2DIbo);
+-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, STARTINDICES*2, nil, GL_STREAM_DRAW);
+-	glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, numIndices*2, indices);
++	streamData(GL_ELEMENT_ARRAY_BUFFER, STARTINDICES*2, numIndices*2, indices);
+ 
+ 	glBindBuffer(GL_ARRAY_BUFFER, im2DVbo);
+-	glBufferData(GL_ARRAY_BUFFER, STARTVERTICES*sizeof(Im2DVertex), nil, GL_STREAM_DRAW);
+-	glBufferSubData(GL_ARRAY_BUFFER, 0, numVertices*sizeof(Im2DVertex), vertices);
++	streamData(GL_ARRAY_BUFFER, STARTVERTICES*sizeof(Im2DVertex), numVertices*sizeof(Im2DVertex), vertices);
+ 
+ 	if(im2dOverrideShader)
+ 		im2dOverrideShader->use();
+@@ -186,6 +258,7 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
+ #ifndef RW_GL_USE_VAOS
+ 	disableAttribPointers(im2dattribDesc, 3);
+ #endif
++	immediateDone(t0);
+ }
+ 
+ 
+@@ -219,6 +292,7 @@ openIm3D(void)
+ 	im3dShader = Shader::create(vs, fs);
+ 	assert(im3dShader);
+ 
++	useDefaultVertexArray();
+ 	glGenBuffers(1, &im3DIbo);
+ 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im3DIbo);
+ 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, STARTINDICES*2, nil, GL_STREAM_DRAW);
+@@ -253,6 +327,8 @@ SurfaceProperties im3dSurfaceProps = { 1.0f, 1.0f, 1.0f };
+ void
+ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
+ {
++	uint64 t0 = perf.enabled ? perfNow() : 0;
++	useDefaultVertexArray();
+ 	if(world == nil){
+ 		static Matrix ident;
+ 		ident.setIdentity();
+@@ -269,38 +345,60 @@ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
+ 	if((flags & im3d::VERTEXUV) == 0)
+ 		SetRenderStatePtr(TEXTURERASTER, nil);
+ 
++	if(gl3Caps.verticesFromMemory){
++		memoryPointers(im3dattribDesc, 4, vertices);
++		num3DVertices = numVertices;
++		if(perf.enabled)
++			perf.immediateNs += perfNow() - t0;
++		return;
++	}
+ #ifdef RW_GL_USE_VAOS
+ 	glBindVertexArray(im2DVao);
+ #endif
+ 
+ 	glBindBuffer(GL_ARRAY_BUFFER, im3DVbo);
+-	glBufferData(GL_ARRAY_BUFFER, STARTVERTICES*sizeof(Im3DVertex), nil, GL_STREAM_DRAW);
+-	glBufferSubData(GL_ARRAY_BUFFER, 0, numVertices*sizeof(Im3DVertex), vertices);
++	streamData(GL_ARRAY_BUFFER, STARTVERTICES*sizeof(Im3DVertex), numVertices*sizeof(Im3DVertex), vertices);
+ #ifndef RW_GL_USE_VAOS
+ 	setAttribPointers(im3dattribDesc, 4);
+ #endif
+ 	num3DVertices = numVertices;
++	if(perf.enabled)
++		perf.immediateNs += perfNow() - t0;
+ }
+ 
+ void
+ im3DRenderPrimitive(PrimitiveType primType)
+ {
+-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im3DIbo);
++	uint64 t0 = perf.enabled ? perfNow() : 0;
++	useDefaultVertexArray();
++	if(!gl3Caps.verticesFromMemory)
++		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im3DIbo);
+ 
+ 	flushCache();
+ 	glDrawArrays(primTypeMap[primType], 0, num3DVertices);
++	immediateDone(t0);
+ }
+ 
+ void
+ im3DRenderIndexedPrimitive(PrimitiveType primType, void *indices, int32 numIndices)
+ {
++	uint64 t0 = perf.enabled ? perfNow() : 0;
++	useDefaultVertexArray();
++	if(gl3Caps.verticesFromMemory){
++		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
++		flushCache();
++		glDrawElements(primTypeMap[primType], numIndices,
++		               GL_UNSIGNED_SHORT, indices);
++		immediateDone(t0);
++		return;
++	}
+ 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im3DIbo);
+-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, STARTINDICES*2, nil, GL_STREAM_DRAW);
+-	glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, numIndices*2, indices);
++	streamData(GL_ELEMENT_ARRAY_BUFFER, STARTINDICES*2, numIndices*2, indices);
+ 
+ 	flushCache();
+ 	glDrawElements(primTypeMap[primType], numIndices,
+ 	               GL_UNSIGNED_SHORT, nil);
++	immediateDone(t0);
+ }
+ 
+ void
+diff --git a/src/gl/gl3matfx.cpp b/src/gl/gl3matfx.cpp
+index 06b01c1..04b4c57 100644
+--- a/src/gl/gl3matfx.cpp
++++ b/src/gl/gl3matfx.cpp
+@@ -43,7 +43,9 @@ matfxDefaultRender(InstanceDataHeader *header, InstanceData *inst, int32 vsBits,
+ 
+ 	rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
+ 
+-	if((vsBits & VSLIGHT_MASK) == 0){
++	if(fewerPrograms)
++		defaultShader_fullLight->use();
++	else if((vsBits & VSLIGHT_MASK) == 0){
+ 		if(getAlphaTest())
+ 			defaultShader->use();
+ 		else
+@@ -132,7 +134,9 @@ matfxEnvRender(InstanceDataHeader *header, InstanceData *inst, int32 vsBits, uin
+ 	rw::SetRenderState(VERTEXALPHA, 1);
+ 	rw::SetRenderState(SRCBLEND, BLENDONE);
+ 
+-	if((vsBits & VSLIGHT_MASK) == 0){
++	if(fewerPrograms)
++		envShader_fullLight->use();
++	else if((vsBits & VSLIGHT_MASK) == 0){
+ 		if(getAlphaTest())
+ 			envShader->use();
+ 		else
+@@ -149,6 +153,32 @@ matfxEnvRender(InstanceDataHeader *header, InstanceData *inst, int32 vsBits, uin
+ 	rw::SetRenderState(SRCBLEND, BLENDSRCALPHA);
+ }
+ 
++// A mesh without an environment map, drawn by the program for one: the map counts for
++// nothing (whichever texture is in its place), and what is left is the default program's
++// picture. That program hands over its colour already multiplied by its alpha, to be blended
++// as it is (the source factor is one): for a mesh that is not seen through the alpha is one
++// and nothing is blended away, for one that is, the sum is the same as with the usual factors.
++static void
++matfxNoEnvRender(InstanceDataHeader *header, InstanceData *inst, int32 vsBits, uint32 flags)
++{
++	Material *m = inst->material;
++
++	setTexture(0, m->texture);
++	setMaterial(flags, m->color, m->surfaceProps);
++
++	static float fxparams[4] = { 0.0f, 1.0f, 0.0f, 0.0f };
++	setUniform(u_fxparams, fxparams);
++
++	rw::SetRenderState(VERTEXALPHA, 1);
++	rw::SetRenderState(SRCBLEND, BLENDONE);
++
++	envShader_fullLight->use();
++
++	drawInst(header, inst);
++
++	rw::SetRenderState(SRCBLEND, BLENDSRCALPHA);
++}
++
+ void
+ matfxRenderCB(Atomic *atomic, InstanceDataHeader *header)
+ {
+@@ -163,6 +193,25 @@ matfxRenderCB(Atomic *atomic, InstanceDataHeader *header)
+ 	InstanceData *inst = header->inst;
+ 	int32 n = header->numMeshes;
+ 
++	if(fewerPrograms){
++		// Every mesh with the environment map's program, the ones without a map too: a
++		// car's body is a mesh with one, then a mesh without, and so on, and each change of
++		// program is dearer than the draw.
++		while(n--){
++			MatFX *matfx = MatFX::get(inst->material);
++			MatFX::Env *env = matfx && matfx->type == MatFX::ENVMAP ? &matfx->fx[0].env : nil;
++			if(env && (env->tex == nil || env->coefficient == 0.0f))
++				env = nil;
++			if(env)
++				matfxEnvRender(header, inst, vsBits, flags, env);
++			else
++				matfxNoEnvRender(header, inst, vsBits, flags);
++			inst++;
++		}
++		teardownVertexInput(header);
++		return;
++	}
++
+ 	while(n--){
+ 		MatFX *matfx = MatFX::get(inst->material);
+ 
+diff --git a/src/gl/gl3pipe.cpp b/src/gl/gl3pipe.cpp
+index 4df0b7c..85c9456 100644
+--- a/src/gl/gl3pipe.cpp
++++ b/src/gl/gl3pipe.cpp
+@@ -20,6 +20,228 @@ namespace gl3 {
+ 
+ #ifdef RW_OPENGL
+ 
++// ===[ Buffers shared between geometries (gl3Caps.sharedBuffers) ]===
++// A geometry with a vertex and an index buffer of its own means other buffers for every
++// atomic drawn. Here geometries of one vertex format lie side by side in a page: a vertex
++// buffer for pageVertices vertices, an index buffer, and one vertex array object for all of
++// them. A geometry's indices are moved up by where its vertices begin in the page, and its
++// meshes are drawn from where its indices begin. Free room is kept as two lists of extents,
++// in order and joined where they touch; a page nobody uses is deleted.
++// A geometry whose vertices change (it is instanced again: water) leaves for buffers of its
++// own, since changing part of a buffer makes ANGLE hand the whole of it to Direct3D again.
++
++struct Extent
++{
++	uint32 start, count;
++};
++
++struct Page
++{
++	Page *next;
++	uint32 vbo, ibo, vao;
++	int32 numAttribs;
++	AttribDesc attribs[12];
++	uint32 stride;
++	int32 numUsers;
++	Extent *freeVertices, *freeIndices;
++	int32 numFreeVertices, numFreeIndices;
++	int32 maxFreeVertices, maxFreeIndices;
++};
++
++uint32 pageVertices = 65536;
++#define PAGE_INDICES (pageVertices*3)
++static Page *pages;
++
++static bool32
++takeExtent(Extent *free, int32 *num, uint32 count, uint32 *start)
++{
++	for(int32 i = 0; i < *num; i++)
++		if(free[i].count >= count){
++			*start = free[i].start;
++			free[i].start += count;
++			free[i].count -= count;
++			if(free[i].count == 0){
++				memmove(&free[i], &free[i+1], (*num-i-1)*sizeof(Extent));
++				(*num)--;
++			}
++			return 1;
++		}
++	return 0;
++}
++
++static void
++giveExtent(Extent **free, int32 *num, int32 *max, uint32 start, uint32 count)
++{
++	Extent *f = *free;
++	int32 i;
++	for(i = 0; i < *num && f[i].start < start; i++)
++		;
++	bool32 before = i > 0 && f[i-1].start + f[i-1].count == start;
++	bool32 after = i < *num && start + count == f[i].start;
++	if(before && after){
++		f[i-1].count += count + f[i].count;
++		memmove(&f[i], &f[i+1], (*num-i-1)*sizeof(Extent));
++		(*num)--;
++	}else if(before)
++		f[i-1].count += count;
++	else if(after){
++		f[i].start = start;
++		f[i].count += count;
++	}else{
++		if(*num == *max){
++			*max = *max ? *max*2 : 16;
++			f = *free = rwResizeT(Extent, f, *max, MEMDUR_EVENT | ID_GEOMETRY);
++		}
++		memmove(&f[i+1], &f[i], (*num-i)*sizeof(Extent));
++		f[i].start = start;
++		f[i].count = count;
++		(*num)++;
++	}
++}
++
++static Page*
++createPage(InstanceDataHeader *header)
++{
++	Page *p = rwNewT(Page, 1, MEMDUR_EVENT | ID_GEOMETRY);
++	memset(p, 0, sizeof(Page));
++	p->numAttribs = header->numAttribs;
++	memcpy(p->attribs, header->attribDesc, header->numAttribs*sizeof(AttribDesc));
++	p->stride = header->attribDesc[0].stride;
++
++	glGenBuffers(1, &p->vbo);
++	glBindBuffer(GL_ARRAY_BUFFER, p->vbo);
++	glBufferData(GL_ARRAY_BUFFER, pageVertices*p->stride, nil, GL_STATIC_DRAW);
++	useDefaultVertexArray();	// not the index buffer of whichever atomic was drawn last
++	glGenBuffers(1, &p->ibo);
++	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, p->ibo);
++	glBufferData(GL_ELEMENT_ARRAY_BUFFER, PAGE_INDICES*2, nil, GL_STATIC_DRAW);
++
++	// the vertex array object, made as a geometry's own is
++	InstanceDataHeader input;
++	input.vao = 0;
++	input.ibo = p->ibo;
++	input.vbo = p->vbo;
++	input.attribDesc = p->attribs;
++	input.numAttribs = p->numAttribs;
++	recordVertexInput(&input);
++	p->vao = input.vao;
++
++	giveExtent(&p->freeVertices, &p->numFreeVertices, &p->maxFreeVertices, 0, pageVertices);
++	giveExtent(&p->freeIndices, &p->numFreeIndices, &p->maxFreeIndices, 0, PAGE_INDICES);
++	p->next = pages;
++	pages = p;
++	return p;
++}
++
++static void
++destroyPage(Page *p)
++{
++	Page **link;
++	for(link = &pages; *link != p; link = &(*link)->next)
++		;
++	*link = p->next;
++	InstanceDataHeader input;
++	input.vao = p->vao;
++	forgetVertexInput(&input);
++	glDeleteBuffers(1, &p->ibo);
++	glDeleteBuffers(1, &p->vbo);
++	rwFree(p->freeVertices);
++	rwFree(p->freeIndices);
++	rwFree(p);
++}
++
++static bool32
++enterPage(InstanceDataHeader *header)
++{
++	if(!gl3Caps.sharedBuffers || header->totalNumVertex == 0 || header->totalNumIndex == 0 ||
++	   header->totalNumVertex > pageVertices || header->totalNumIndex > PAGE_INDICES ||
++	   header->numAttribs > 12)
++		return 0;
++
++	Page *p;
++	uint32 firstVertex = 0, firstIndex = 0;
++	for(p = pages; p; p = p->next){
++		if(p->numAttribs != header->numAttribs ||
++		   memcmp(p->attribs, header->attribDesc, header->numAttribs*sizeof(AttribDesc)) != 0)
++			continue;
++		if(!takeExtent(p->freeVertices, &p->numFreeVertices, header->totalNumVertex, &firstVertex))
++			continue;
++		if(takeExtent(p->freeIndices, &p->numFreeIndices, header->totalNumIndex, &firstIndex))
++			break;
++		giveExtent(&p->freeVertices, &p->numFreeVertices, &p->maxFreeVertices,
++			firstVertex, header->totalNumVertex);
++	}
++	if(p == nil){
++		p = createPage(header);
++		takeExtent(p->freeVertices, &p->numFreeVertices, header->totalNumVertex, &firstVertex);
++		takeExtent(p->freeIndices, &p->numFreeIndices, header->totalNumIndex, &firstIndex);
++	}
++
++	glBindBuffer(GL_ARRAY_BUFFER, p->vbo);
++	glBufferSubData(GL_ARRAY_BUFFER, firstVertex*p->stride,
++		header->totalNumVertex*p->stride, header->vertexBuffer);
++
++	uint16 *moved = rwNewT(uint16, header->totalNumIndex, MEMDUR_FUNCTION | ID_GEOMETRY);
++	for(uint32 i = 0; i < header->totalNumIndex; i++)
++		moved[i] = header->indexBuffer[i] + firstVertex;
++	useDefaultVertexArray();
++	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, p->ibo);
++	glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, firstIndex*2, header->totalNumIndex*2, moved);
++	rwFree(moved);
++
++	InstanceData *inst = header->inst;
++	for(uint32 i = 0; i < header->numMeshes; i++, inst++)
++		inst->offset += firstIndex*2;
++	header->vbo = p->vbo;
++	header->ibo = p->ibo;
++	header->vao = p->vao;
++	header->page = p;
++	header->firstVertex = firstVertex;
++	header->firstIndex = firstIndex;
++	p->numUsers++;
++	return 1;
++}
++
++static void
++leavePage(InstanceDataHeader *header)
++{
++	Page *p = (Page*)header->page;
++	giveExtent(&p->freeVertices, &p->numFreeVertices, &p->maxFreeVertices,
++		header->firstVertex, header->totalNumVertex);
++	giveExtent(&p->freeIndices, &p->numFreeIndices, &p->maxFreeIndices,
++		header->firstIndex, header->totalNumIndex);
++	InstanceData *inst = header->inst;
++	for(uint32 i = 0; i < header->numMeshes; i++, inst++)
++		inst->offset -= header->firstIndex*2;
++	header->page = nil;
++	header->vbo = header->ibo = header->vao = 0;
++	header->firstVertex = header->firstIndex = 0;
++	if(--p->numUsers == 0)
++		destroyPage(p);
++}
++
++void
++uploadInstanceData(InstanceDataHeader *header, bool32 reinstance)
++{
++	if(!reinstance && enterPage(header))
++		return;
++	if(header->page)
++		leavePage(header);
++	if(header->ibo == 0){
++		useDefaultVertexArray();	// not the index buffer of whichever atomic was drawn last
++		glGenBuffers(1, &header->ibo);
++		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, header->ibo);
++		glBufferData(GL_ELEMENT_ARRAY_BUFFER, header->totalNumIndex*2,
++				header->indexBuffer, GL_STATIC_DRAW);
++	}
++	if(header->vbo == 0)
++		glGenBuffers(1, &header->vbo);
++	glBindBuffer(GL_ARRAY_BUFFER, header->vbo);
++	glBufferData(GL_ARRAY_BUFFER, header->totalNumVertex*header->attribDesc[0].stride,
++	             header->vertexBuffer, GL_STATIC_DRAW);
++	recordVertexInput(header);
++}
++
+ void
+ freeInstanceData(Geometry *geometry)
+ {
+@@ -28,11 +250,11 @@ freeInstanceData(Geometry *geometry)
+ 		return;
+ 	InstanceDataHeader *header = (InstanceDataHeader*)geometry->instData;
+ 	geometry->instData = nil;
++	if(header->page)
++		leavePage(header);
++	forgetVertexInput(header);
+ 	glDeleteBuffers(1, &header->ibo);
+ 	glDeleteBuffers(1, &header->vbo);
+-#ifdef RW_GL_USE_VAOS
+-	glDeleteBuffers(1, &header->vao);
+-#endif
+ 	rwFree(header->indexBuffer);
+ 	rwFree(header->vertexBuffer);
+ 	rwFree(header->attribDesc);
+@@ -85,17 +307,13 @@ instanceMesh(rw::ObjPipeline *rwpipe, Geometry *geo)
+ 	header->vertexBuffer = nil;
+ 	header->numAttribs = 0;
+ 	header->attribDesc = nil;
++	// the buffers come with the vertices, once their format is known: uploadInstanceData()
+ 	header->ibo = 0;
+ 	header->vbo = 0;
+-
+-#ifdef RW_GL_USE_VAOS
+-	glGenVertexArrays(1, &header->vao);
+-	glBindVertexArray(header->vao);
+-#endif
+-	glGenBuffers(1, &header->ibo);
+-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, header->ibo);
+-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, header->totalNumIndex*2,
+-			header->indexBuffer, GL_STATIC_DRAW);
++	header->vao = 0;
++	header->page = nil;
++	header->firstVertex = 0;
++	header->firstIndex = 0;
+ 
+ 	return header;
+ }
+@@ -240,7 +458,6 @@ defaultInstanceCB(Geometry *geo, InstanceDataHeader *header, bool32 reinstance)
+ 		//
+ 		header->vertexBuffer = rwNewT(uint8, header->totalNumVertex*stride, MEMDUR_EVENT | ID_GEOMETRY);
+ 		assert(header->vbo == 0);
+-		glGenBuffers(1, &header->vbo);
+ 	}
+ 
+ 	attribs = header->attribDesc;
+@@ -296,17 +513,7 @@ defaultInstanceCB(Geometry *geo, InstanceDataHeader *header, bool32 reinstance)
+ 		}
+ 	}
+ 
+-#ifdef RW_GL_USE_VAOS
+-	glBindVertexArray(header->vao);
+-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, header->ibo);
+-#endif
+-	glBindBuffer(GL_ARRAY_BUFFER, header->vbo);
+-	glBufferData(GL_ARRAY_BUFFER, header->totalNumVertex*attribs[0].stride,
+-	             header->vertexBuffer, GL_STATIC_DRAW);
+-#ifdef RW_GL_USE_VAOS
+-	setAttribPointers(header->attribDesc, header->numAttribs);
+-	glBindVertexArray(0);
+-#endif
++	uploadInstanceData(header, reinstance);
+ }
+ 
+ void
+diff --git a/src/gl/gl3render.cpp b/src/gl/gl3render.cpp
+index a02c5c0..e4e0e47 100644
+--- a/src/gl/gl3render.cpp
++++ b/src/gl/gl3render.cpp
+@@ -2,6 +2,8 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#include <chrono>
++
+ #include "../rwbase.h"
+ #include "../rwerror.h"
+ #include "../rwplg.h"
+@@ -20,9 +22,34 @@ namespace gl3 {
+ 
+ #define MAX_LIGHTS 
+ 
++Perf perf;
++bool32 fewerPrograms;
++
++uint64
++perfNow(void)
++{
++	return (uint64)std::chrono::duration_cast<std::chrono::nanoseconds>(
++		std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
+ void
+ drawInst_simple(InstanceDataHeader *header, InstanceData *inst)
+ {
++	if(perf.enabled){
++		uint64 t0 = perfNow();
++		flushCache();
++		uint64 t1 = perfNow();
++		glDrawElements(header->primType, inst->numIndex,
++		               GL_UNSIGNED_SHORT, (void*)(uintptr)inst->offset);
++		uint64 t2 = perfNow();
++		perf.stateNs += t1 - t0;
++		perf.drawNs += t2 - t1;
++		perf.draws++;
++		perf.drawNsAfter[perf.changed & 7] += t2 - t1;
++		perf.drawsAfter[perf.changed & 7]++;
++		perf.changed = 0;
++		return;
++	}
+ 	flushCache();
+ 	glDrawElements(header->primType, inst->numIndex,
+ 	               GL_UNSIGNED_SHORT, (void*)(uintptr)inst->offset);
+@@ -71,8 +98,73 @@ drawInst(InstanceDataHeader *header, InstanceData *inst)
+ }
+ 
+ 
++uint32 defaultVertexArray;
++static uint32 boundVertexArray;
++
++static void
++bindVertexArray(uint32 vao)
++{
++	if(vao != boundVertexArray){
++		glBindVertexArray(vao);
++		boundVertexArray = vao;
++		perf.vertexArrays++;
++		perf.changed |= 2;
++	}
++}
++
++void
++useDefaultVertexArray(void)
++{
++	if(gl3Caps.vertexArrays)
++		bindVertexArray(defaultVertexArray);
++}
++
++// a new context: nothing of an old one is bound in it
++void
++resetVertexArray(void)
++{
++	if(gl3Caps.vertexArrays)
++		glBindVertexArray(defaultVertexArray);
++	boundVertexArray = defaultVertexArray;
++}
++
++static void attribPointers(AttribDesc *attribDescs, int32 numAttribs);
++
++// after the buffers of instanced geometry have been filled
++void
++recordVertexInput(InstanceDataHeader *header)
++{
++	if(!gl3Caps.vertexArrays)
++		return;
++	if(header->vao == 0)
++		glGenVertexArrays(1, &header->vao);
++	bindVertexArray(header->vao);
++	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, header->ibo);
++	glBindBuffer(GL_ARRAY_BUFFER, header->vbo);
++	attribPointers(header->attribDesc, header->numAttribs);
++	useDefaultVertexArray();
++}
++
++void
++forgetVertexInput(InstanceDataHeader *header)
++{
++	if(header->vao == 0)
++		return;
++	useDefaultVertexArray();
++	glDeleteVertexArrays(1, &header->vao);
++	header->vao = 0;
++}
++
++// the application's and immediate mode's: on the default vertex array
+ void
+ setAttribPointers(AttribDesc *attribDescs, int32 numAttribs)
++{
++	useDefaultVertexArray();
++	attribPointers(attribDescs, numAttribs);
++}
++
++static void
++attribPointers(AttribDesc *attribDescs, int32 numAttribs)
+ {
+ 	AttribDesc *a;
+ 	for(a = attribDescs; a != &attribDescs[numAttribs]; a++){
+@@ -93,21 +185,30 @@ disableAttribPointers(AttribDesc *attribDescs, int32 numAttribs)
+ void
+ setupVertexInput(InstanceDataHeader *header)
+ {
+-#ifdef RW_GL_USE_VAOS
+-	glBindVertexArray(header->vao);
+-#else
+-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, header->ibo);
+-	glBindBuffer(GL_ARRAY_BUFFER, header->vbo);
+-	setAttribPointers(header->attribDesc, header->numAttribs);
+-#endif
++	uint64 t0 = perf.enabled ? perfNow() : 0;
++	if(header->vao){
++		bindVertexArray(header->vao);
++	}else{
++		useDefaultVertexArray();
++		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, header->ibo);
++		glBindBuffer(GL_ARRAY_BUFFER, header->vbo);
++		attribPointers(header->attribDesc, header->numAttribs);
++	}
++	if(perf.enabled)
++		perf.inputNs += perfNow() - t0;
+ }
+ 
+ void
+ teardownVertexInput(InstanceDataHeader *header)
+ {
+-#ifndef RW_GL_USE_VAOS
+-	disableAttribPointers(header->attribDesc, header->numAttribs);
+-#endif
++	// a vertex array stays bound: the next atomic's takes its place, or the default one
++	// when something else draws
++	if(header->vao == 0){
++		uint64 t0 = perf.enabled ? perfNow() : 0;
++		disableAttribPointers(header->attribDesc, header->numAttribs);
++		if(perf.enabled)
++			perf.inputNs += perfNow() - t0;
++	}
+ }
+ 
+ int32
+@@ -167,7 +268,9 @@ defaultRenderCB(Atomic *atomic, InstanceDataHeader *header)
+ 
+ 		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
+ 
+-		if((vsBits & VSLIGHT_MASK) == 0){
++		if(fewerPrograms)
++			defaultShader_fullLight->use();
++		else if((vsBits & VSLIGHT_MASK) == 0){
+ 			if(getAlphaTest())
+ 				defaultShader->use();
+ 			else
+diff --git a/src/gl/gl3shader.cpp b/src/gl/gl3shader.cpp
+index f361dc8..eb11607 100644
+--- a/src/gl/gl3shader.cpp
++++ b/src/gl/gl3shader.cpp
+@@ -22,7 +22,7 @@ namespace gl3 {
+ UniformRegistry uniformRegistry;
+ static char nameBuffer[(MAX_UNIFORMS + MAX_BLOCKS)*32];	// static because memory system isn't up yet when we register
+ static uint32 nameBufPtr;
+-static float uniformData[512*4];	// seems enough
++static float uniformData[1024*4];	// seems enough (the skin's matrices are in it twice, see u_boneRows)
+ static uint32 dataPtr;
+ 
+ static int uniformTypesize[] = {
+@@ -141,12 +141,15 @@ flushUniforms(void)
+ 				break;
+ 			case UNIFORM_VEC4:
+ 				glUniform4fv(loc, u->num, (GLfloat*)u->data);
++				perf.uniforms++;
+ 				break;
+ 			case UNIFORM_IVEC4:
+ 				glUniform4iv(loc, u->num, (GLint*)u->data);
++				perf.uniforms++;
+ 				break;
+ 			case UNIFORM_MAT4:
+ 				glUniformMatrix4fv(loc, u->num, GL_FALSE, (GLfloat*)u->data);
++				perf.uniforms++;
+ 				break;
+ 			}
+ 		currentShader->serialNums[i] = u->serialNum;
+@@ -243,6 +246,152 @@ linkprogram(GLint vs, GLint fs, GLuint *program)
+ 	return 0;
+ }
+ 
++// ===[ Programs kept between runs ]===
++// A program binary is what the driver made of the sources: with ANGLE on Direct3D, the
++// compiled HLSL. Compiling is what takes the time (over a minute for the forty programs of
++// a game on a phone with a Direct3D level 9 GPU), loading a binary takes none. A file for
++// each program, named by a hash of its sources and of the driver's own name and version; a
++// binary the driver no longer takes (it checks its own version) is compiled again and
++// written over. ANGLE compiles further variants of a program at the first draws that need
++// them (other vertex formats, other outputs): saveProgramBinaries() later takes those in.
++
++const char *programCacheDir;
++int32 numProgramsLoaded, numProgramsCompiled;
++
++enum { MAX_KEPT_PROGRAMS = 256, PROGRAM_FILE_MAGIC = 0x42505752 };	// "RWPB"
++
++struct KeptProgram
++{
++	Shader *shader;
++	uint64 key;
++	GLint length;	// of the binary in the file
++};
++static KeptProgram keptPrograms[MAX_KEPT_PROGRAMS];
++static int32 numKeptPrograms;
++
++static void
++hashString(uint64 *hash, const char *s)
++{
++	if(s)
++		for(; *s; s++){
++			*hash ^= (uint8)*s;
++			*hash *= 1099511628211ULL;
++		}
++	*hash ^= 0xFF;
++	*hash *= 1099511628211ULL;
++}
++
++static uint64
++programKey(const char **vsrc, const char **fsrc)
++{
++	uint64 hash = 14695981039346656037ULL;
++	int n;
++	for(n = 0; vsrc[n]; n++)
++		hashString(&hash, vsrc[n]);
++	hashString(&hash, "|");
++	for(n = 0; fsrc[n]; n++)
++		hashString(&hash, fsrc[n]);
++	hashString(&hash, (const char*)glGetString(GL_VERSION));
++	hashString(&hash, (const char*)glGetString(GL_RENDERER));
++	return hash;
++}
++
++static void
++programPath(char *path, size_t size, uint64 key, const char *ending)
++{
++	snprintf(path, size, "%s/%08x%08x.%s", programCacheDir, (uint32)(key >> 32), (uint32)key, ending);
++}
++
++// 0 if there is none, or none the driver takes
++static GLuint
++loadProgramBinary(uint64 key, GLint *length)
++{
++	char path[600];
++	uint32 head[3];
++	GLuint program = 0;
++	GLint success = 0;
++
++	programPath(path, sizeof(path), key, "bin");
++	FILE *f = fopen(path, "rb");
++	if(f == nil)
++		return 0;
++	if(fread(head, 4, 3, f) != 3 || head[0] != PROGRAM_FILE_MAGIC || head[2] == 0 || head[2] > 32*1024*1024){
++		fclose(f);
++		return 0;
++	}
++	uint8 *data = (uint8*)malloc(head[2]);
++	if(data && fread(data, 1, head[2], f) == head[2]){
++		program = glCreateProgram();
++		glProgramBinary(program, head[1], data, head[2]);
++		glGetProgramiv(program, GL_LINK_STATUS, &success);
++		while(glGetError() != GL_NO_ERROR)
++			;
++		if(!success){
++			glDeleteProgram(program);
++			program = 0;
++		}
++	}
++	free(data);
++	fclose(f);
++	*length = head[2];
++	return program;
++}
++
++// the length of what was written, 0 if nothing was
++static GLint
++saveProgramBinary(uint64 key, GLuint program)
++{
++	char path[600], partial[600];
++	GLint length = 0;
++	GLsizei written = 0;
++	GLenum format = 0;
++
++	glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &length);
++	if(length <= 0)
++		return 0;
++	uint8 *data = (uint8*)malloc(length);
++	if(data == nil)
++		return 0;
++	glGetProgramBinary(program, length, &written, &format, data);
++	while(glGetError() != GL_NO_ERROR)
++		;
++	if(written > 0){
++		// under another name first: half a file is not to be found later
++		programPath(path, sizeof(path), key, "bin");
++		programPath(partial, sizeof(partial), key, "tmp");
++		FILE *f = fopen(partial, "wb");
++		if(f){
++			uint32 head[3] = { PROGRAM_FILE_MAGIC, (uint32)format, (uint32)written };
++			bool ok = fwrite(head, 4, 3, f) == 3 && fwrite(data, 1, written, f) == (size_t)written;
++			fclose(f);
++			remove(path);
++			if(!ok || rename(partial, path) != 0){
++				remove(partial);
++				written = 0;
++			}
++		}else
++			written = 0;
++	}
++	free(data);
++	return written;
++}
++
++void
++saveProgramBinaries(void)
++{
++	if(programCacheDir == nil || !gl3Caps.programBinaries)
++		return;
++	for(int32 i = 0; i < numKeptPrograms; i++){
++		GLint length = 0;
++		glGetProgramiv(keptPrograms[i].shader->program, GL_PROGRAM_BINARY_LENGTH, &length);
++		if(length > 0 && length != keptPrograms[i].length){
++			GLint written = saveProgramBinary(keptPrograms[i].key, keptPrograms[i].shader->program);
++			if(written > 0)
++				keptPrograms[i].length = written;
++		}
++	}
++}
++
+ Shader*
+ Shader::create(const char **vsrc, const char **fsrc)
+ {
+@@ -250,25 +399,46 @@ Shader::create(const char **vsrc, const char **fsrc)
+ 	int i;
+ 	int fail;
+ 
+-	fail = compileshader(GL_VERTEX_SHADER, vsrc, &vs);
+-	if(fail)
+-		return nil;
+-
+-	fail = compileshader(GL_FRAGMENT_SHADER, fsrc, &fs);
+-	if(fail){
+-		glDeleteShader(vs);
+-		return nil;
++	bool kept = programCacheDir != nil && gl3Caps.programBinaries;
++	uint64 key = 0;
++	GLint keptLength = 0;
++	program = 0;
++	if(kept){
++		key = programKey(vsrc, fsrc);
++		program = loadProgramBinary(key, &keptLength);
+ 	}
+ 
+-	fail = linkprogram(vs, fs, &program);
++	if(program == 0){
++		fail = compileshader(GL_VERTEX_SHADER, vsrc, &vs);
++		if(fail)
++			return nil;
+ 
+-	glDeleteShader(vs);
+-	glDeleteShader(fs);
+-	if(fail){
+-		return nil;
+-	}
++		fail = compileshader(GL_FRAGMENT_SHADER, fsrc, &fs);
++		if(fail){
++			glDeleteShader(vs);
++			return nil;
++		}
++
++		fail = linkprogram(vs, fs, &program);
++
++		glDeleteShader(vs);
++		glDeleteShader(fs);
++		if(fail){
++			return nil;
++		}
++		if(kept)
++			keptLength = saveProgramBinary(key, program);
++		numProgramsCompiled++;
++	}else
++		numProgramsLoaded++;
+ 
+ 	Shader *sh = rwNewT(Shader, 1, MEMDUR_EVENT | ID_DRIVER);	 // or global?
++	if(kept && numKeptPrograms < MAX_KEPT_PROGRAMS){
++		keptPrograms[numKeptPrograms].shader = sh;
++		keptPrograms[numKeptPrograms].key = key;
++		keptPrograms[numKeptPrograms].length = keptLength;
++		numKeptPrograms++;
++	}
+ 
+ #ifdef xxxRW_GLES2
+ 	int numUniforms;
+@@ -339,12 +509,19 @@ Shader::use(void)
+ 	if(currentShader != this){
+ 		glUseProgram(this->program);
+ 		currentShader = this;
++		perf.programs++;
++		perf.changed |= 4;
+ 	}
+ }
+ 
+ void
+ Shader::destroy(void)
+ {
++	for(int32 i = 0; i < numKeptPrograms; i++)
++		if(keptPrograms[i].shader == this){
++			keptPrograms[i] = keptPrograms[--numKeptPrograms];
++			break;
++		}
+ 	glDeleteProgram(this->program);
+ 	rwFree(this->uniformLocations);
+ 	rwFree(this->serialNums);
+diff --git a/src/gl/gl3skin.cpp b/src/gl/gl3skin.cpp
+index 6b69bbd..8910a39 100644
+--- a/src/gl/gl3skin.cpp
++++ b/src/gl/gl3skin.cpp
+@@ -27,6 +27,7 @@ namespace gl3 {
+ static Shader *skinShader, *skinShader_noAT;
+ static Shader *skinShader_fullLight, *skinShader_fullLight_noAT;
+ static int32 u_boneMatrices;
++static int32 u_boneRows;
+ 
+ void
+ skinInstanceCB(Geometry *geo, InstanceDataHeader *header, bool32 reinstance)
+@@ -119,7 +120,6 @@ skinInstanceCB(Geometry *geo, InstanceDataHeader *header, bool32 reinstance)
+ 		//
+ 		header->vertexBuffer = rwNewT(uint8, header->totalNumVertex*stride, MEMDUR_EVENT | ID_GEOMETRY);
+ 		assert(header->vbo == 0);
+-		glGenBuffers(1, &header->vbo);
+ 	}
+ 
+ 	Skin *skin = Skin::get(geo);
+@@ -189,17 +189,7 @@ skinInstanceCB(Geometry *geo, InstanceDataHeader *header, bool32 reinstance)
+ 			  header->totalNumVertex, a->stride);
+ 	}
+ 
+-#ifdef RW_GL_USE_VAOS
+-	glBindVertexArray(header->vao);
+-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, header->ibo);
+-#endif
+-	glBindBuffer(GL_ARRAY_BUFFER, header->vbo);
+-	glBufferData(GL_ARRAY_BUFFER, header->totalNumVertex*attribs[0].stride,
+-	             header->vertexBuffer, GL_STATIC_DRAW);
+-#ifdef RW_GL_USE_VAOS
+-	setAttribPointers(header->attribDesc, header->numAttribs);
+-	glBindVertexArray(0);
+-#endif
++	uploadInstanceData(header, reinstance);
+ }
+ 
+ void
+@@ -209,6 +199,7 @@ skinUninstanceCB(Geometry *geo, InstanceDataHeader *header)
+ }
+ 
+ static float skinMatrices[64*16];
++static float skinRows[64*12];
+ 
+ void
+ uploadSkinMatrices(Atomic *a)
+@@ -245,7 +236,28 @@ uploadSkinMatrices(Atomic *a)
+ 			m++;
+ 		}
+ 	}
+-	setUniform(u_boneMatrices, skinMatrices);
++	if(bonesAsRows){
++		packBoneRows(skinRows, skinMatrices, hier ? hier->numNodes : skin->numBones);
++		setUniform(u_boneRows, skinRows);
++	}else
++		setUniform(u_boneMatrices, skinMatrices);
++}
++
++// A Matrix is right, up, at and pos, four floats each: the shader's mat4 has them as columns,
++// and its fourth row is not used. The three rows that are, for u_boneRows (BONES_AS_ROWS):
++void
++packBoneRows(float *rows, const float *matrices, int32 numBones)
++{
++	for(int32 i = 0; i < numBones; i++){
++		const float *f = &matrices[i*16];
++		float *r = &rows[i*12];
++		for(int j = 0; j < 3; j++){
++			r[j*4+0] = f[0+j];
++			r[j*4+1] = f[4+j];
++			r[j*4+2] = f[8+j];
++			r[j*4+3] = f[12+j];
++		}
++	}
+ }
+ 
+ void
+@@ -273,7 +285,9 @@ skinRenderCB(Atomic *atomic, InstanceDataHeader *header)
+ 
+ 		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
+ 
+-		if((vsBits & VSLIGHT_MASK) == 0){
++		if(fewerPrograms)
++			skinShader_fullLight->use();
++		else if((vsBits & VSLIGHT_MASK) == 0){
+ 			if(getAlphaTest())
+ 				skinShader->use();
+ 			else
+@@ -338,6 +352,7 @@ void
+ initSkin(void)
+ {
+ 	u_boneMatrices = registerUniform("u_boneMatrices", UNIFORM_MAT4, 64);
++	u_boneRows = registerUniform("u_boneRows", UNIFORM_VEC4, 64*3);
+ 
+ 	Driver::registerPlugin(PLATFORM_GL3, 0, ID_SKIN,
+ 	                       skinOpen, skinClose);
+diff --git a/src/gl/rwgl3.h b/src/gl/rwgl3.h
+index 3275679..5a33a41 100644
+--- a/src/gl/rwgl3.h
++++ b/src/gl/rwgl3.h
+@@ -86,11 +86,17 @@ struct InstanceDataHeader : rw::InstanceDataHeader
+ 
+ 	uint32      ibo;
+ 	uint32      vbo;		// or 2?
+-#ifdef RW_GL_USE_VAOS
+-	uint32      vao;
+-#endif
++	uint32      vao;		// 0 where there are no vertex array objects
+ 
+ 	InstanceData *inst;
++
++	// Where the buffers and the vertex array are a page's, shared with other geometries
++	// (gl3Caps.sharedBuffers): the page, and where in its buffers this geometry's vertices
++	// and indices begin. The indices in the buffer count from the page's first vertex, and
++	// each mesh's offset from the page's first index.
++	void       *page;
++	uint32      firstVertex;
++	uint32      firstIndex;
+ };
+ 
+ #ifdef RW_GL3
+@@ -163,6 +169,57 @@ void disableAttribPointers(AttribDesc *attribDescs, int32 numAttribs);
+ void setupVertexInput(InstanceDataHeader *header);
+ void teardownVertexInput(InstanceDataHeader *header);
+ 
++// Vertex array objects, where there are any (gl3Caps.vertexArrays): the vertex input of
++// instanced geometry is recorded once and bound with one call, instead of being described
++// attribute by attribute for every atomic drawn. Everything else (immediate mode, an
++// application's own drawing) sets its attributes on the default one, as before, and says so
++// before it binds an index buffer: that binding is the bound vertex array's.
++void recordVertexInput(InstanceDataHeader *header);
++// An instance callback's last step: the header's vertexBuffer and attribDesc are as they are
++// to be drawn. Into a page shared with other geometries or into buffers of its own; a second
++// time (reinstance) always into its own.
++void uploadInstanceData(InstanceDataHeader *header, bool32 reinstance);
++// how many vertices a page of shared buffers holds (65536 at most: indices are 16 bits wide)
++extern uint32 pageVertices;
++void forgetVertexInput(InstanceDataHeader *header);
++void useDefaultVertexArray(void);
++void resetVertexArray(void);
++extern uint32 defaultVertexArray;
++
++// Each pipeline has four programs: with or without the alpha test, with or without the
++// lights that have a position. They draw the same picture where either will do (a fragment
++// that would fail no test passes it, a light that is not there adds nothing), and a mesh is
++// drawn with the cheapest that fits. Where it is changing programs that costs (a third of a
++// millisecond on a phone's Direct3D level 9 driver, through ANGLE, and sixty changes a
++// frame), the one that fits every mesh is used for all of them: set fewerPrograms.
++extern bool32 fewerPrograms;
++
++// Where the time of drawing goes, counted while perf.enabled is set
++struct Perf
++{
++	bool32 enabled;
++	uint32 draws, immediates;
++	uint64 inputNs, stateNs, drawNs, immediateNs;
++	// what changed between the draws: each of these is a call or two into the driver
++	uint32 programs, uniforms, textures, samplers, vertexArrays, blends, depths, culls;
++	// the frame, counted by whoever knows where one ends, and the different textures bound
++	// in each: what drawing in the order of the textures could bring the changes down to
++	uint32 frame, differentTextures;
++	// the draw calls again, by what was changed before each: 1 a texture, 2 the vertex
++	// array, 4 the program
++	uint32 changed, drawsAfter[8];
++	uint64 drawNsAfter[8];
++};
++extern Perf perf;
++uint64 perfNow(void);
++
++// Linked programs kept between runs (gl3Caps.programBinaries): a folder for them, nil for
++// none. Compiling them is a minute on a slow phone with ANGLE on Direct3D level 9.
++// saveProgramBinaries() again later takes in what the driver compiled at the first draws.
++extern const char *programCacheDir;
++extern int32 numProgramsLoaded, numProgramsCompiled;
++void saveProgramBinaries(void);
++
+ // Render state
+ 
+ // Vertex shader bits
+@@ -277,12 +334,27 @@ struct Gl3Caps
+ 	bool dxtSupported;
+ 	bool astcSupported;	// not used yet
+ 	float maxAnisotropy;
++	bool vertexArrays;	// OpenGL (ES) 3, or OES_vertex_array_object
++	bool programBinaries;	// OpenGL ES 3, or OES_get_program_binary
++	// Immediate mode hands the driver pointers to its vertices and indices, not buffers
++	// filled for every draw: OpenGL ES 2.0, where the default vertex array is the context's
++	// own and may point into memory. A buffer filled anew for a draw is what costs most
++	// there (ANGLE on Direct3D level 9: 170 microseconds a draw against 36).
++	bool verticesFromMemory;
++	// Geometries of one vertex format share vertex and index buffers and a vertex array
++	// object, and each is drawn from its part of them: OpenGL ES 2.0 with vertex array
++	// objects. Other buffers for every atomic are what a draw costs most after another
++	// program (ANGLE on Direct3D level 9: 100 to 160 microseconds of a draw's 200).
++	bool sharedBuffers;
+ };
+ extern Gl3Caps gl3Caps;
+ // GLES can't read back textures very nicely.
+ // In most cases that's not an issue, but when it is,
+ // this has to be set before the texture is filled:
+ extern bool32 needToReadBackTextures;
++// Skin matrices are given to the shaders as three rows each (u_boneRows, BONES_AS_ROWS)
++// instead of whole (u_boneMatrices): where a vertex shader has too few uniforms for 64 of them.
++extern bool32 bonesAsRows;
+ 
+ void allocateDXT(Raster *raster, int32 dxt, int32 numLevels, bool32 hasAlpha);
+ 
+diff --git a/src/gl/rwgl3plg.h b/src/gl/rwgl3plg.h
+index 5374b3e..5733ac1 100644
+--- a/src/gl/rwgl3plg.h
++++ b/src/gl/rwgl3plg.h
+@@ -10,6 +10,7 @@ ObjPipeline *makeSkinPipeline(void);
+ void skinInstanceCB(Geometry *geo, InstanceDataHeader *header, bool32 reinstance);
+ void skinRenderCB(Atomic *atomic, InstanceDataHeader *header);
+ void uploadSkinMatrices(Atomic *atomic);
++void packBoneRows(float *rows, const float *matrices, int32 numBones);
+ 
+ 
+ }
+diff --git a/src/gl/shaders/skin.vert b/src/gl/shaders/skin.vert
+index 7408542..6116ed4 100644
+--- a/src/gl/shaders/skin.vert
++++ b/src/gl/shaders/skin.vert
+@@ -1,4 +1,10 @@
++#ifdef BONES_AS_ROWS
++// three rows of each bone's matrix: a Direct3D level 9 vertex shader (ANGLE) has 256
++// constants, and 64 whole matrices are that many alone
++uniform vec4 u_boneRows[192];
++#else
+ uniform mat4 u_boneMatrices[64];
++#endif
+ 
+ VSIN(ATTRIB_POS)	vec3 in_pos;
+ 
+@@ -12,8 +18,15 @@ main(void)
+ 	vec3 SkinVertex = vec3(0.0, 0.0, 0.0);
+ 	vec3 SkinNormal = vec3(0.0, 0.0, 0.0);
+ 	for(int i = 0; i < 4; i++){
++#ifdef BONES_AS_ROWS
++		int b = int(in_indices[i])*3;
++		vec4 p = vec4(in_pos, 1.0);
++		SkinVertex += vec3(dot(u_boneRows[b], p), dot(u_boneRows[b+1], p), dot(u_boneRows[b+2], p)) * in_weights[i];
++		SkinNormal += vec3(dot(u_boneRows[b].xyz, in_normal), dot(u_boneRows[b+1].xyz, in_normal), dot(u_boneRows[b+2].xyz, in_normal)) * in_weights[i];
++#else
+ 		SkinVertex += (u_boneMatrices[int(in_indices[i])] * vec4(in_pos, 1.0)).xyz * in_weights[i];
+ 		SkinNormal += (mat3(u_boneMatrices[int(in_indices[i])]) * in_normal) * in_weights[i];
++#endif
+ 	}
+ 
+ 	vec4 Vertex = u_world * vec4(SkinVertex, 1.0);
+diff --git a/src/gl/shaders/skin_gl.inc b/src/gl/shaders/skin_gl.inc
+index 7d1268e..1205a40 100644
+--- a/src/gl/shaders/skin_gl.inc
++++ b/src/gl/shaders/skin_gl.inc
+@@ -1,5 +1,11 @@
+ const char *skin_vert_src =
++"#ifdef BONES_AS_ROWS\n"
++"// three rows of each bone's matrix: a Direct3D level 9 vertex shader (ANGLE) has 256\n"
++"// constants, and 64 whole matrices are that many alone\n"
++"uniform vec4 u_boneRows[192];\n"
++"#else\n"
+ "uniform mat4 u_boneMatrices[64];\n"
++"#endif\n"
+ 
+ "VSIN(ATTRIB_POS)	vec3 in_pos;\n"
+ 
+@@ -13,8 +19,15 @@ const char *skin_vert_src =
+ "	vec3 SkinVertex = vec3(0.0, 0.0, 0.0);\n"
+ "	vec3 SkinNormal = vec3(0.0, 0.0, 0.0);\n"
+ "	for(int i = 0; i < 4; i++){\n"
++"#ifdef BONES_AS_ROWS\n"
++"		int b = int(in_indices[i])*3;\n"
++"		vec4 p = vec4(in_pos, 1.0);\n"
++"		SkinVertex += vec3(dot(u_boneRows[b], p), dot(u_boneRows[b+1], p), dot(u_boneRows[b+2], p)) * in_weights[i];\n"
++"		SkinNormal += vec3(dot(u_boneRows[b].xyz, in_normal), dot(u_boneRows[b+1].xyz, in_normal), dot(u_boneRows[b+2].xyz, in_normal)) * in_weights[i];\n"
++"#else\n"
+ "		SkinVertex += (u_boneMatrices[int(in_indices[i])] * vec4(in_pos, 1.0)).xyz * in_weights[i];\n"
+ "		SkinNormal += (mat3(u_boneMatrices[int(in_indices[i])]) * in_normal) * in_weights[i];\n"
++"#endif\n"
+ "	}\n"
+ 
+ "	vec4 Vertex = u_world * vec4(SkinVertex, 1.0);\n"

@@ -99,11 +99,15 @@ void
 CdStreamInit(int32 numChannels)
 {
 	DWORD SectorsPerCluster;
-	DWORD BytesPerSector;
+	DWORD BytesPerSector = 0;
 	DWORD NumberOfFreeClusters;
 	DWORD TotalNumberOfClusters;
 
 	GetDiskFreeSpace(nil, &SectorsPerCluster, &BytesPerSector, &NumberOfFreeClusters, &TotalNumberOfClusters);
+	// An app container (Windows 10 Mobile) may be refused the answer about the drive's root, and
+	// the sector size is the alignment of a buffer below: not whatever was on the stack
+	if ( BytesPerSector == 0 )
+		BytesPerSector = CDSTREAM_SECTOR_SIZE;
 	
 	_gdwCdStreamFlags = 0;
 

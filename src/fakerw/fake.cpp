@@ -604,8 +604,12 @@ RwVideoMode *RwEngineGetVideoModeInfo(RwVideoMode *modeinfo, RwInt32 modeIndex)
 	{ return Engine::getVideoModeInfo(modeinfo, modeIndex); }
 RwInt32 RwEngineGetCurrentVideoMode(void) { return Engine::getCurrentVideoMode(); }
 RwBool RwEngineSetVideoMode(RwInt32 modeIndex) { return Engine::setVideoMode(modeIndex); }
+#ifdef LIBRW_RENDER_SCALE
+// Engine::get/setRenderScale are not in the librw this repository pins (vendor/librw),
+// and nothing calls them. On Windows 10 Mobile the shell scales the swap chain instead.
 RwInt32 RwEngineGetRenderScale(void) { return Engine::getRenderScale(); }
 RwBool RwEngineSetRenderScale(RwInt32 percent) { return Engine::setRenderScale(percent); }
+#endif
 RwInt32 RwEngineGetTextureMemorySize(void);
 RwInt32 RwEngineGetMaxTextureSize(void);
 

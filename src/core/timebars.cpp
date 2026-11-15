@@ -33,8 +33,33 @@ uint32 msCollected[MAX_MS_COLLECTED];
 float FrameInitTime;
 #endif
 
+#ifdef GTA_W10M
+static uint32 tbFrames;
+
+// The timed parts of the frame last drawn and how long each took, for the phone's log
+// (skel/w10m): the log is where a phone's frames can be looked into.
+int32
+tbLastFrame(uint32 *frame, const char **names, float *milliseconds, int32 max)
+{
+	int32 n = 0;
+	float perUnit = (float)CTimer::GetCyclesPerFrame() / (float)CTimer::GetCyclesPerMillisecond();
+	*frame = tbFrames;
+	for (uint32 i = 0; i < TimerBar.count && n < max; i++) {
+		if (TimerBar.Timers[i].endTime < TimerBar.Timers[i].startTime)
+			continue;
+		names[n] = TimerBar.Timers[i].name;
+		milliseconds[n] = (TimerBar.Timers[i].endTime - TimerBar.Timers[i].startTime) * perUnit;
+		n++;
+	}
+	return n;
+}
+#endif
+
 void tbInit()
 {
+#ifdef GTA_W10M
+	tbFrames++;
+#endif
 	TimerBar.count = 0;
 	uint32 i = CTimer::GetFrameCounter() & 0x7F;
 	if (i == 0) {

@@ -1067,7 +1067,7 @@ void CHud::Draw()
 			if (FrontEndMenuManager.m_PrefsRadarMode != 1) {
 				CRect rect(0.0f, 0.0f, SCREEN_SCALE_X(RADAR_WIDTH), SCREEN_SCALE_Y(RADAR_HEIGHT));
 				
-#if defined ANDROID
+#ifdef GTA_TOUCH_CONTROLS
 				// Top-left instead of bottom-left, matches TransformRadarPointToScreenSpace() (Radar.cpp).
 				rect.Translate(SCREEN_SCALE_X_FIX(RADAR_LEFT), SCREEN_SCALE_Y(RADAR_TOP));
 #else

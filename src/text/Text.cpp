@@ -101,13 +101,54 @@ CText::Load(void)
 
 	keyArray.Update(data.chars);
 	CFileMgr::CloseFile(file);
+#ifdef GTA_W10M
+	if (FrontEndMenuManager.m_PrefsLanguage != CMenuManager::LANGUAGE_AMERICAN)
+		LoadFallback();
+#endif
 	CFileMgr::SetDir("");
 }
+
+#ifdef GTA_W10M
+// The main table of AMERICAN.GXT (its mission tables are not needed: every language's file
+// has the missions' lines). Called with TEXT as the directory.
+void
+CText::LoadFallback(void)
+{
+	int file = CFileMgr::OpenFile("AMERICAN.GXT", "rb");
+	if (file == 0)
+		return;
+
+	bool tkey_loaded = false, tdat_loaded = false;
+	ChunkHeader header;
+	size_t offset = 0;
+	while (!tkey_loaded || !tdat_loaded) {
+		if (CFileMgr::Read(file, (char*)&header, sizeof(header)) != sizeof(header) || header.size <= 0)
+			break;
+		if (strncmp(header.magic, "TKEY", 4) == 0 && !tkey_loaded) {
+			fallback_keyArray.Load(header.size, file, &offset);
+			tkey_loaded = true;
+		} else if (strncmp(header.magic, "TDAT", 4) == 0 && !tdat_loaded) {
+			fallback_data.Load(header.size, file, &offset);
+			tdat_loaded = true;
+		} else
+			CFileMgr::Seek(file, header.size, SEEK_CUR);
+	}
+	CFileMgr::CloseFile(file);
+	if (!tkey_loaded || !tdat_loaded) {
+		fallback_keyArray.Unload();
+		fallback_data.Unload();
+	}
+}
+#endif
 
 void
 CText::Unload(void)
 {
 	CMessages::ClearAllMessagesDisplayedByGame();
+#ifdef GTA_W10M
+	fallback_keyArray.Unload();
+	fallback_data.Unload();
+#endif
 	keyArray.Unload();
 	data.Unload();
 	mission_keyArray.Unload();
@@ -131,6 +172,14 @@ CText::Get(const char *key)
 		outstr = mission_keyArray.Search(key, mission_data.chars, &result);
 #else
 		outstr = mission_keyArray.Search(key, &result);
+#endif
+#ifdef GTA_W10M
+	if (!result && fallback_keyArray.numEntries > 0) {
+		uint8 found = false;
+		wchar *american = fallback_keyArray.Search(key, fallback_data.chars, &found);
+		if (found)
+			return american;
+	}
 #endif
 	return outstr;
 }

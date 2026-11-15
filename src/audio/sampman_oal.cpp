@@ -400,7 +400,10 @@ cSampleManager::AutoDetect3DProviders()
 static bool8
 _ResolveLink(char const *path, char *out)
 {
-#ifdef _WIN32
+#ifdef GTA_W10M
+	// Shortcuts to MP3s are a desktop thing, and so is the shell that resolves them
+	return FALSE;
+#elif defined _WIN32
 	size_t len = strlen(path);
 	if (len < 4 || strcmp(&path[len - 4], ".lnk") != 0)
 		return FALSE;

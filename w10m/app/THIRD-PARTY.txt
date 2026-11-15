@@ -1,0 +1,67 @@
+What is in this package, and under which terms
+==============================================
+
+reVC.exe
+    reVC, the reverse-engineered source of Grand Theft Auto: Vice City
+    (https://github.com/mrxenginner/reVC), with the changes of its Android fork
+    (https://github.com/codepdbh/revc-android-port-evolved) and of this port. Its licence is
+    LICENSE.md, next to this file.
+    librw, a re-implementation of RenderWare graphics, (c) 2014 aap, MIT licence
+    (https://github.com/aap/librw).
+    lodepng, (c) Lode Vandevenne, zlib licence. glad, generated OpenGL loader.
+    mINI, (c) 2018 Danijel Durakovic, MIT licence.
+    The OpenAL device list (src/audio/oal/aldlist.cpp), under these terms:
+
+        Copyright (c) 2006, Creative Labs Inc.
+        All rights reserved.
+
+        Redistribution and use in source and binary forms, with or without modification, are
+        permitted provided that the following conditions are met:
+
+            * Redistributions of source code must retain the above copyright notice, this list
+              of conditions and the following disclaimer.
+            * Redistributions in binary form must reproduce the above copyright notice, this
+              list of conditions and the following disclaimer in the documentation and/or
+              other materials provided with the distribution.
+            * Neither the name of Creative Labs Inc. nor the names of its contributors may be
+              used to endorse or promote products derived from this software without specific
+              prior written permission.
+
+        THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+        EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+        MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+        THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+        OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+        HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+        TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+        SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+OpenAL32.dll
+    OpenAL Soft 1.24.3 (https://github.com/kcat/openal-soft), GNU Library General Public Licence
+    version 2 or later, with an XAudio2 output backend added by this port. It is a library of
+    its own and can be replaced by another build of the same version; its source and the
+    backend are in this port's repository (w10m/openal, w10m/patches/openal-soft).
+    It includes {fmt}, (c) Victor Zverovich and contributors, MIT licence.
+
+libmpg123.dll
+    mpg123 1.32.10 (https://www.mpg123.de), (c) 1995-2020 Michael Hipp and others, GNU Lesser
+    General Public Licence version 2.1. A library of its own, built from the unchanged release
+    (w10m/deps/mpg123 in this port's repository).
+
+libEGL.dll, libGLESv2.dll
+    ANGLE (https://chromium.googlesource.com/angle/angle), (c) The ANGLE Project Authors, BSD
+    3-clause licence, as built by butterscotch-w10m from gecko-w10m's sources (Mozilla's copy,
+    with the SwapChainPanel window of that port).
+
+vcruntime140.dll, msvcp140.dll
+    The Microsoft Visual C++ runtime for UWP apps (Microsoft.VCLibs), redistributed under
+    Microsoft's terms for it.
+
+gamefiles\
+    The files reVC adds to and replaces in the game's own (from the reVC repository). The
+    game's data itself is not in this package: the app copies it from the player's own copy
+    of Grand Theft Auto: Vice City.
+
+This port is not made, endorsed or supported by Rockstar Games or Take-Two Interactive.
+Grand Theft Auto and Vice City are their trademarks.

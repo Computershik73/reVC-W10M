@@ -1416,7 +1416,7 @@ CPlayerPed::ProcessPlayerWeapon(CPad *padUsed)
 	}
 #endif
 
-#if defined ANDROID
+#ifdef GTA_TOUCH_CONTROLS
 	// m_bUseMouse3rdPerson doubles as "free camera look is active" for both
 	// mouse (PC) *and* the right stick (see Cam.cpp), so it can't just be
 	// forced off globally -- that fixes target-lock but breaks right-stick

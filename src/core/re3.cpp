@@ -1204,10 +1204,22 @@ const int   re3_buffsize = 1024;
 static char re3_buff[re3_buffsize];
 #endif
 
+#ifdef GTA_W10M
+// An app container has no MessageBox: these go to the shell (w10m/app), which keeps the log
+// (revc.log in LocalState) and can put a dialog on the phone's screen.
+extern "C" void host_log(const char *text);
+extern "C" void host_logf(const char *format, ...);
+extern "C" void host_fatal(const char *text);
+#endif
+
 #ifndef MASTER
 void re3_assert(const char *expr, const char *filename, unsigned int lineno, const char *func)
 {
-#ifdef _WIN32
+#ifdef GTA_W10M
+	// What "Ignore" does in the desktop's dialog: many of these are survivable, and there is
+	// nobody to ask on a phone. The log says where it was.
+	host_logf("ASSERT FAILED: %s, %s:%u (%s)", expr, filename, lineno, func);
+#elif defined _WIN32
 	int nCode;
 
 	strcpy_s(re3_buff, re3_buffsize, "Assertion failed!" );
@@ -1290,6 +1302,9 @@ void re3_trace(const char *filename, unsigned int lineno, const char *func, cons
 	va_end(va);
 	
 	sprintf_s(buff, re3_buffsize * 2, "[%s.%s:%d]: %s", filename, func, lineno, re3_buff);
+#ifdef GTA_W10M
+	host_log(buff);
+#endif
 #else
 	vsprintf(re3_buff, format, va);
 	va_end(va);
@@ -1308,7 +1323,13 @@ void re3_usererror(const char *format, ...)
 {
 	va_list va;
 	va_start(va, format);
-#ifdef _WIN32
+#ifdef GTA_W10M
+	vsprintf_s(re3_buff, re3_buffsize, format, va);
+	va_end(va);
+
+	// logs it, shows it and ends the app; does not return
+	host_fatal(re3_buff);
+#elif defined _WIN32
 	vsprintf_s(re3_buff, re3_buffsize, format, va);
 	va_end(va);
 	

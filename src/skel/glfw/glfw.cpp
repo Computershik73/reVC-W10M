@@ -1,5 +1,12 @@
 #if defined RW_GL3 && !defined LIBRW_SDL2
 
+// Windows 10 Mobile (GTA_W10M) is Windows without the desktop: no user32 window, message
+// queue or system parameters, no winmm, and the UWP shell (w10m/app) owns the process entry
+// point and calls reVC_Main() on a thread of its own. GLFW there is w10m/glfw.
+#if defined _WIN32 && !defined GTA_W10M
+#define WIN32_DESKTOP
+#endif
+
 #ifdef _WIN32
 #include <shlobj.h>
 #include <basetsd.h>
@@ -234,7 +241,24 @@ psGrabScreen(RwCamera *pCamera)
 /*
  *****************************************************************************
  */
-#ifdef _WIN32
+#ifdef GTA_W10M
+void W10M_Start(void);	// skel/w10m/w10m.cpp
+
+// Milliseconds, as timeGetTime() on a desktop: winmm is not there, the performance counter is
+RwUInt32
+psTimer(void)
+{
+	static LARGE_INTEGER frequency;
+	LARGE_INTEGER now;
+
+	if ( frequency.QuadPart == 0 )
+		QueryPerformanceFrequency(&frequency);
+
+	QueryPerformanceCounter(&now);
+
+	return (RwUInt32)(now.QuadPart * 1000 / frequency.QuadPart);
+}
+#elif defined _WIN32
 #pragma comment( lib, "Winmm.lib" ) // Needed for time
 RwUInt32
 psTimer(void)
@@ -480,9 +504,12 @@ psInitialize(void)
 
 	_psInitializeVibration();
 	
+#ifdef GTA_W10M
+	W10M_Start();	// skel/w10m: before the engine starts
+#endif
 	gGameState = GS_START_UP;
 	TRACE("gGameState = GS_START_UP");
-#ifdef _WIN32
+#ifdef WIN32_DESKTOP
 	OSVERSIONINFO verInfo;
 	verInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
 	
@@ -531,7 +558,17 @@ psInitialize(void)
 #endif
 
 
-#ifdef _WIN32
+#ifdef GTA_W10M
+	// A 32-bit process on a phone with 3 or 4 GB: more may be free than a size_t holds
+	MEMORYSTATUSEX memstats;
+	memstats.dwLength = sizeof(memstats);
+	GlobalMemoryStatusEx(&memstats);
+
+	_dwMemAvailPhys = (size_t)Min(memstats.ullAvailPhys, (DWORDLONG)0x7FFFFFFF);
+
+	debug("Physical memory size %u MB\n", (uint32)(memstats.ullTotalPhys >> 20));
+	debug("Available physical memory %u MB\n", (uint32)(memstats.ullAvailPhys >> 20));
+#elif defined _WIN32
 	MEMORYSTATUS memstats;
 	GlobalMemoryStatus(&memstats);
 
@@ -831,9 +868,16 @@ psSelectDevice()
 #else
 	if ( !useDefault )
 	{
+#ifdef GTA_W10M
+		// There is one mode, the shell's panel, and its size is not the game's to choose: it
+		// replaces whatever reVC.ini remembers (from another resolution setting, or from when
+		// the system's bars were on the screen), which could be smaller than the one mode.
+		{
+#else
 		if(FrontEndMenuManager.m_nPrefsWidth == 0 ||
 		   FrontEndMenuManager.m_nPrefsHeight == 0 ||
 		   FrontEndMenuManager.m_nPrefsDepth == 0){
+#endif
 			// Defaults if nothing specified
 			const GLFWvidmode *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
 			FrontEndMenuManager.m_nPrefsWidth = mode->width;
@@ -1236,11 +1280,20 @@ void InitialiseLanguage()
 	subUserLCID = subSystemLCID = !strncmp(systemLang, "en_AU",5) ? SUBLANG_ENGLISH_AUS : SUBLANG_OTHER;
 	short subLayout = !strncmp(keyboardLang, "en_AU",5) ? SUBLANG_ENGLISH_AUS : SUBLANG_OTHER;
 
+#elif defined GTA_W10M
+	// A phone has no keyboard layout to ask about (and no user32): its language decides
+	WORD primUserLCID	= PRIMARYLANGID(GetSystemDefaultLCID());
+	WORD primSystemLCID = PRIMARYLANGID(GetUserDefaultLCID());
+	WORD primLayout		= primSystemLCID;
+
+	WORD subUserLCID	= SUBLANGID(GetSystemDefaultLCID());
+	WORD subSystemLCID	= SUBLANGID(GetUserDefaultLCID());
+	WORD subLayout		= subSystemLCID;
 #else
 	WORD primUserLCID	= PRIMARYLANGID(GetSystemDefaultLCID());
 	WORD primSystemLCID = PRIMARYLANGID(GetUserDefaultLCID());
 	WORD primLayout		= PRIMARYLANGID((DWORD)GetKeyboardLayout(0));
-	
+
 	WORD subUserLCID	= SUBLANGID(GetSystemDefaultLCID());
 	WORD subSystemLCID	= SUBLANGID(GetUserDefaultLCID());
 	WORD subLayout		= SUBLANGID((DWORD)GetKeyboardLayout(0));
@@ -1353,7 +1406,7 @@ void InitialiseLanguage()
 
 void HandleExit()
 {
-#ifdef _WIN32
+#ifdef WIN32_DESKTOP
 	MSG message;
 	while ( PeekMessage(&message, nil, 0U, 0U, PM_REMOVE|PM_NOYIELD) )
 	{
@@ -1867,7 +1920,12 @@ windowIconifyCB(GLFWwindow* window, int iconified) {
 /*
  *****************************************************************************
  */
-#ifdef _WIN32
+#ifdef GTA_W10M
+// Called by the UWP shell on the game's thread, with the game's folder as current directory
+extern "C" int
+reVC_Main(int argc, char *argv[])
+{
+#elif defined _WIN32
 int PASCAL
 WinMain(HINSTANCE instance,
 	HINSTANCE prevInstance	__RWUNUSED__,
@@ -1924,7 +1982,7 @@ main(int argc, char *argv[])
 		return FALSE;
 	}
 
-#ifdef _WIN32
+#ifdef WIN32_DESKTOP
 	/*
 	 * Get proper command line params, cmdLine passed to us does not
 	 * work properly under all circumstances...
@@ -1969,7 +2027,7 @@ main(int argc, char *argv[])
 		return 0;
 	}
 
-#ifdef _WIN32
+#ifdef WIN32_DESKTOP
 	HWND wnd = glfwGetWin32Window(PSGLOBAL(window));
 
 	HICON icon = LoadIcon(instance, MAKEINTRESOURCE(IDI_MAIN_ICON));
@@ -2006,7 +2064,7 @@ main(int argc, char *argv[])
 
 		RsEventHandler(rsCAMERASIZE, &r);
 	}
-#ifdef _WIN32
+#ifdef WIN32_DESKTOP
 	SystemParametersInfo(SPI_SETPOWEROFFACTIVE, FALSE, nil, SPIF_SENDCHANGE);
 	SystemParametersInfo(SPI_SETLOWPOWERACTIVE, FALSE, nil, SPIF_SENDCHANGE);
 	
@@ -2054,7 +2112,7 @@ main(int argc, char *argv[])
 #endif
 	}
 	
-#ifdef _WIN32
+#ifdef WIN32_DESKTOP
 	SetErrorMode(SEM_FAILCRITICALERRORS);
 #endif
 
@@ -2452,8 +2510,8 @@ main(int argc, char *argv[])
 	 */
 	RsEventHandler(rsTERMINATE, nil);
 
-#ifdef _WIN32
-	/* 
+#ifdef WIN32_DESKTOP
+	/*
 	 * Free the argv strings...
 	 */
 	free(argv);

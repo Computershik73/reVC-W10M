@@ -743,6 +743,7 @@ openim2d_uv2(void)
 {
 	u_xform = rw::gl3::registerUniform("u_xform", rw::gl3::UNIFORM_VEC4);	// this doesn't add a new one, so it's safe
 
+	rw::gl3::useDefaultVertexArray();	// an index buffer binding is the bound vertex array's
 	glGenBuffers(1, &im2D_UV2_Ibo);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im2D_UV2_Ibo);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, NUMINDICES*2, nil, GL_STREAM_DRAW);
@@ -778,6 +779,7 @@ RenderIndexedPrimitive_UV2(RwPrimitiveType primType, Im2DVertexUV2 *vertices, Rw
 	Camera *cam;
 	cam = (Camera*)engine->currentCamera;
 
+	useDefaultVertexArray();
 #ifdef RW_GL_USE_VAOS
 	glBindVertexArray(im2D_UV2_Vao);
 #endif

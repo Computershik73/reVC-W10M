@@ -1,5 +1,11 @@
 const char *neoRimSkin_vert_src =
+"#ifdef BONES_AS_ROWS\n"
+"// three rows of each bone's matrix: a Direct3D level 9 vertex shader (ANGLE) has 256\n"
+"// constants, and 64 whole matrices are that many alone\n"
+"uniform vec4 u_boneRows[192];\n"
+"#else\n"
 "uniform mat4 u_boneMatrices[64];\n"
+"#endif\n"
 
 "uniform vec3 u_viewVec;\n"
 "uniform vec4 u_rampStart;\n"
@@ -18,8 +24,15 @@ const char *neoRimSkin_vert_src =
 "	vec3 SkinVertex = vec3(0.0, 0.0, 0.0);\n"
 "	vec3 SkinNormal = vec3(0.0, 0.0, 0.0);\n"
 "	for(int i = 0; i < 4; i++){\n"
+"#ifdef BONES_AS_ROWS\n"
+"		int b = int(in_indices[i])*3;\n"
+"		vec4 p = vec4(in_pos, 1.0);\n"
+"		SkinVertex += vec3(dot(u_boneRows[b], p), dot(u_boneRows[b+1], p), dot(u_boneRows[b+2], p)) * in_weights[i];\n"
+"		SkinNormal += vec3(dot(u_boneRows[b].xyz, in_normal), dot(u_boneRows[b+1].xyz, in_normal), dot(u_boneRows[b+2].xyz, in_normal)) * in_weights[i];\n"
+"#else\n"
 "		SkinVertex += (u_boneMatrices[int(in_indices[i])] * vec4(in_pos, 1.0)).xyz * in_weights[i];\n"
 "		SkinNormal += (mat3(u_boneMatrices[int(in_indices[i])]) * in_normal) * in_weights[i];\n"
+"#endif\n"
 "	}\n"
 
 "	vec4 Vertex = u_world * vec4(SkinVertex, 1.0);\n"

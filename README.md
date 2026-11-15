@@ -1,5 +1,11 @@
 <img src="https://github.com/mrxenginner/reVC/blob/miami/res/images/logo_1024.png?raw=true" alt="reVC logo" width="200">
 
+## Windows 10 Mobile
+
+The `w10m` branch adds a port to Windows 10 Mobile (32-bit ARM, UWP), on top of the Android fork
+described below: [`w10m/README.md`](w10m/README.md) has what it is made of, how it is built and
+what has and has not been tested. The rest of this file is the Android fork's.
+
 ## Intro
 
 In this repository you'll find the fully reversed source code for GTA VC ([miami](https://github.com/mrxenginner/reVC/tree/miami/) branch).

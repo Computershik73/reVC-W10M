@@ -190,6 +190,12 @@ enum Config {
 	#define GTA_HANDHELD
 #endif
 
+// Phones (Android, Windows 10 Mobile): played with on-screen controls, whose left stick sits
+// where the radar was, and without a mouse
+#if defined(ANDROID) || defined(GTA_W10M)
+	#define GTA_TOUCH_CONTROLS
+#endif
+
 // TODO(MIAMI): someone ought to find and check out uses of these defines:
 //#define GTA3_STEAM_PATCH
 //#define GTAVC_JP_PATCH
@@ -388,7 +394,7 @@ enum Config {
 //#	define PS2_MENU_USEALLPAGEICONS
 #else
 #	define MAP_ENHANCEMENTS			// Adding waypoint and better mouse support
-#	if defined(XINPUT) || defined(GTA_HANDHELD)
+#	if defined(XINPUT) || defined(GTA_HANDHELD) || defined(GTA_W10M) // the on-screen pad is a gamepad, and wears the names of the type chosen there
 #		define GAMEPAD_MENU		// Add gamepad menu
 #	endif
 #	define TRIANGLE_BACK_BUTTON
