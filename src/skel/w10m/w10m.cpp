@@ -118,6 +118,9 @@ NoteFrameParts(void)
 			p.drawsAfter[i] = 0;
 			p.drawNsAfter[i] = 0;
 		}
+		if (rw::gl3::gl3Caps.atlases)
+			host_logf("perf: atlases: %.0f meshes a frame went into the draw of the mesh before them", p.merged * f);
+		p.merged = 0;
 		p.draws = p.immediates = 0;
 		p.inputNs = p.stateNs = p.drawNs = p.immediateNs = 0;
 		p.programs = p.uniforms = p.textures = p.samplers = p.vertexArrays = p.blends = p.depths = p.culls = 0;
@@ -452,11 +455,14 @@ SpareTheSlow(void)
 		return;
 	done = true;
 	bool slow = rw::gl3::gl3Caps.gles && rw::gl3::gl3Caps.glversion < 30;
-	host_logf("w10m: OpenGL ES %d.%d, vertex arrays %s, program binaries %s, immediate mode's vertices from %s%s",
+	host_logf("w10m: OpenGL ES %d.%d, vertex arrays %s, program binaries %s, immediate mode's vertices from %s, "
+	          "shared buffers %s, atlases %s%s",
 	          rw::gl3::gl3Caps.glversion / 10, rw::gl3::gl3Caps.glversion % 10,
 	          rw::gl3::gl3Caps.vertexArrays ? "yes" : "no",
 	          rw::gl3::gl3Caps.programBinaries ? (rw::gl3::programCacheDir ? "kept" : "not kept") : "no",
-	          rw::gl3::gl3Caps.verticesFromMemory ? "memory" : "buffers", slow ? "; sparing a slow phone" : "");
+	          rw::gl3::gl3Caps.verticesFromMemory ? "memory" : "buffers",
+	          rw::gl3::gl3Caps.sharedBuffers ? "yes" : "no", rw::gl3::gl3Caps.atlases ? "yes" : "no",
+	          slow ? "; sparing a slow phone" : "");
 	if (!slow) {
 		// REVC_PROGRAMS=few: the same on a phone that is not slow, to see what it is worth there
 		const char *programs = getenv("REVC_PROGRAMS");
@@ -470,8 +476,18 @@ SpareTheSlow(void)
 	// One program for a pipeline, not the cheapest of four for every mesh: changing programs
 	// is the dearest thing between two draws here (librw, fewerPrograms). REVC_PROGRAMS=all
 	// keeps the four.
+	// Of the four it is the two with the alpha test that are used, by whether the atomic has
+	// lights: buildings have none, and are spared the lights' arithmetic for every vertex.
+	// REVC_PROGRAMS=few: the one with the lights for everything. =noat: nothing is
+	// discarded, which is a measurement and not a picture.
 	const char *programs = getenv("REVC_PROGRAMS");
-	rw::gl3::fewerPrograms = programs == nil || strcmp(programs, "all") != 0;
+	rw::gl3::fewerPrograms = 2;
+	if (programs && strcmp(programs, "all") == 0)
+		rw::gl3::fewerPrograms = 0;
+	if (programs && strcmp(programs, "few") == 0)
+		rw::gl3::fewerPrograms = 1;
+	if (programs && strcmp(programs, "noat") == 0)
+		rw::gl3::fewerPrograms = 3;
 	// Vehicles in full detail up to 30 m instead of 70. REVC_FULL_DETAIL=1 keeps the 70.
 	if (getenv("REVC_FULL_DETAIL") == nil)
 		W10M_VehicleDetail = 0.43f;

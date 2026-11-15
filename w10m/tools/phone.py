@@ -314,6 +314,51 @@ def cmd_file(a):
     save(a.name, fetch(package()["PackageFullName"], a.name, a.path))
 
 
+def cmd_frames(a):
+    """The series REVC_FRAMESHOT=2k left (frame_001.bmp...): fetched, taken off the phone, and put on
+    one sheet, frames.png, each with its number (needs PIL; without it the PNGs alone)."""
+    pfn = package()["PackageFullName"]
+    listing = json.loads(get("/api/filesystem/apps/files", knownfolderid="LocalAppData", packagefullname=pfn,
+                             path="\\LocalState"))
+    names = sorted(i["Name"] for i in listing.get("Items", []) if re.fullmatch(r"frame_\d+\.bmp", i["Name"]))
+    folder = os.path.join(OUT, "frames")
+    if os.path.isdir(folder):
+        for old in os.listdir(folder):
+            os.remove(os.path.join(folder, old))
+    os.makedirs(folder, exist_ok=True)
+    pictures = []
+    for name in names[::a.every]:
+        png = bmp_to_png(fetch(pfn, name))
+        if png:
+            path = os.path.join(folder, name[:-4] + ".png")
+            with open(path, "wb") as f:
+                f.write(png)
+            pictures.append((int(name[6:-4]), path))
+    for name in names:
+        remove(pfn, name)
+    print(f"{len(pictures)} of {len(names)} frames -> {folder}")
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return
+    if not pictures:
+        return
+    first = Image.open(pictures[0][1])
+    w, h = first.size
+    columns = a.columns
+    rows = (len(pictures) + columns - 1) // columns
+    sheet = Image.new("RGB", (columns * w, rows * h))
+    draw = ImageDraw.Draw(sheet)
+    for i, (number, path) in enumerate(pictures):
+        x, y = (i % columns) * w, (i // columns) * h
+        sheet.paste(Image.open(path), (x, y))
+        draw.rectangle([x, y, x + 30, y + 12], fill=(0, 0, 0))
+        draw.text((x + 2, y), str(number), fill=(255, 255, 0))
+    out = os.path.join(OUT, "frames.png")
+    sheet.save(out)
+    print(f"sheet: {out} ({columns} across, {w}x{h} each)")
+
+
 def remove(pfn, name, path="\\LocalState"):
     try:
         return send("DELETE", "/api/filesystem/apps/file", knownfolderid="LocalAppData", packagefullname=pfn,
@@ -438,6 +483,9 @@ def main():
     ip.add_argument("--wait", type=int, default=600, help="seconds to wait for the phone to finish")
     for name in ("version", "launch", "stop", "log", "phones"):
         sub.add_parser(name)
+    sp = sub.add_parser("frames")
+    sp.add_argument("--every", type=int, default=1, help="every so many of the frames")
+    sp.add_argument("--columns", type=int, default=5)
     fp = sub.add_parser("file")
     fp.add_argument("name")
     fp.add_argument("--path", default="\\LocalState")
@@ -459,7 +507,7 @@ def main():
     try:
         {"install": cmd_install, "version": cmd_version, "launch": cmd_launch, "stop": cmd_stop, "log": cmd_log,
          "file": cmd_file, "ls": cmd_ls, "mem": cmd_mem, "env": cmd_env, "unenv": cmd_unenv, "rm": cmd_rm,
-         "run": cmd_run, "phones": cmd_phones}[a.cmd](a)
+         "run": cmd_run, "phones": cmd_phones, "frames": cmd_frames}[a.cmd](a)
     except urllib.error.HTTPError as e:
         sys.exit(f"the Device Portal answered HTTP {e.code} ({e.reason})")
     except OSError as e:

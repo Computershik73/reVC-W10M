@@ -11,7 +11,7 @@ copies it into itself; installing and playing, for players: [`app/INSTALL.txt`](
 
 ## Status
 
-**The game runs on two phones, and is playable on one of them** (the other gets 9 to 22
+**The game runs on two phones, and is playable on one of them** (the other gets 17 to 27
 frames a second). `tools/build.py` produces the
 signed `builds/reVC_<version>_ARM.appx`.
 
@@ -23,7 +23,7 @@ signed `builds/reVC_<version>_ARM.appx`.
 | Taking the game in (1417 files, 1.5 GB) | works | works, 14 minutes; five files over 62 MB only by the app reading them itself |
 | From the start to the first picture | 6 s | 75 s the first time (the shader programs are compiled), 15 to 19 s afterwards |
 | The menu | 59 frames a second | 37 at 1280x720 (60 at 640x360) |
-| In the game | 30, the game's own limit (9 to 15 at 2560x1440) | 20 to 22 standing in a street, 9 to 11 in traffic, at 768x432 (it was 4 to 7 at 1280x720); see *The slow phone* |
+| In the game | 30, the game's own limit (9 to 15 at 2560x1440) | 26 to 27 standing in a street, 17 to 22 driving, at 768x432 (it was 4 to 7 at 1280x720); see *The slow phone* |
 | Memory | | 217 MB of the 390 MB the phone allows an app |
 
 On both: a new game from the menu, the first start's conversion of the textures, the opening
@@ -85,7 +85,11 @@ frame (`REVC_PERF=1` counts them). What follows from that, and has been done:
   same picture where either fits; the one that fits every mesh is now used for all of them. A
   vehicle's meshes without an environment map go through the environment map's program as
   well, with the map counting for nothing, so that a car's body is one program and not two in
-  turn. 62 to 75 changes of program a frame became 11 to 14.
+  turn. 62 to 75 changes of program a frame became 11 to 14. (Later, of the default
+  pipeline's four, the two with the alpha test, by whether the atomic has lights: that is
+  the same for all the meshes of an atomic, so the changes are no more, and what has no
+  lights, every building, is spared eight rounds of their arithmetic for each vertex. A few
+  per cent at 768x432. `REVC_PROGRAMS=few` is the one program again.)
 - **432 lines by default on a GPU of Direct3D level 9** (the shell asks Direct3D, before the
   game has a context; the RES button still chooses otherwise). With the processor's share cut
   down, the pixels count again. Standing where a new game begins: 12 to 13 frames a second at
@@ -113,6 +117,20 @@ frame (`REVC_PERF=1` counts them). What follows from that, and has been done:
   turned out to be the uniforms that change with every atomic. A geometry whose vertices
   change (water) has buffers of its own: a change to a part of a buffer has ANGLE hand all of
   it to Direct3D again, 2 to 5 ms for such a page.
+- **Atlases** (OpenGL ES 2.0 with DXT textures; `LIBRW_NO_ATLASES=1`). A building is a few
+  meshes that differ in nothing but their texture, each a draw with a change of texture
+  before it. When a texture dictionary has been read (`CTxdStore`), those of its textures
+  that are DXT, of one format, wrapped both ways and no bigger than 512 are also put
+  together into a bigger one, whole blocks as they are, each with its edge blocks repeated
+  around it for the filter (`makeAtlases` in librw's `gl3raster.cpp`). Geometry of the game's
+  world pipeline is instanced with one more attribute for each vertex, where its texture is
+  in the atlas; the fragment shader wraps the coordinates inside that part; and
+  `defaultRenderCB` draws the meshes that follow one another and have the same material
+  colour as one. The game's models are triangle strips, so the indices are laid out with the
+  joining triangles of no area between the meshes. A count beforehand said three draws of
+  the world in five could go, and no model has a vertex in two textures; in the game 293
+  draws a frame became 160 and 319 changes of texture 170. Standing: 24.4 frames a second
+  became 27, at 768x432 and at 640x360 alike.
 
 How a draw of new vertices may be made, by `REVC_BENCH=1` on the Lumia 650, microseconds a
 draw (four vertices, six indices):
@@ -140,7 +158,29 @@ order of the textures. A frame binds a texture 300 to 320 times and 205 to 230 o
 different ones (`REVC_PERF=1` counts both), so a third of the binds at most could go, at 25
 to 55 microseconds each, for a list of draws put off and sorted.
 
-The Elite x3 has the build before the last five items (1.0.1115.140; they are for OpenGL ES
+**What a frame waits for: the processor or the GPU.** With the calls on a thread of their
+own the time that thread works is the frame's, and it can be read against the size of the
+picture (`REVC_RESOLUTION`; the same scene of some 290 draws, before the two items below):
+
+| Render target | The drawing thread, ms a frame |
+|---|---|
+| 320x180 | 39.2 |
+| 640x360 | 40.2 |
+| 768x432 | 45.3 |
+| 1280x720 | 91.5 |
+
+Up to 360 lines it is the processor's calls, 39 to 40 ms whatever the picture's size; above
+that the GPU, at about 78 nanoseconds a pixel on top of some 19 ms. Three things were tried
+on the GPU's side at 1280x720, where the time is all its own: the lights' arithmetic only
+where there are lights, 0 to 3 per cent (kept: see *One program for a pipeline*); no alpha
+test in any fragment shader (`REVC_PROGRAMS=noat`, a measurement and not a picture), 11 per
+cent, not used so far, because telling by the mesh where the test is needed is what the
+changes of program came from; and the textures half as wide and half as high
+(`LIBRW_HALF_TEXTURES=1`: the player's own PC textures are drawn as they are, DXT
+compressed), 3 to 5 per cent there and 7 to 9 at 768x432, which is not worth a blurred
+picture.
+
+The Elite x3 has the build before the last six items (1.0.1115.140; they are for OpenGL ES
 2.0, and it has 3.0, where vertex array objects and program binaries are the standard's own):
 a new game by the same script, the picture right. At the 2560x1440 its player had chosen it
 draws 370 to 940 draws a frame at 75 to 100 microseconds each, 8 to 19 frames a second; at
@@ -148,13 +188,27 @@ draws 370 to 940 draws a frame at 75 to 100 microseconds each, 8 to 19 frames a 
 
 Standing where a new game begins, on the Lumia: 4.6 to 6.5 frames a second at 1280x720 as it
 first ran; 11 to 13 after the first five items; 16 at 768x432 with one program for a
-pipeline; 20 to 22.5 now, with 280 to 350 draws a frame and 45 to 50 immediate ones, for
-which the drawing thread works 44 to 50 ms and the game's own 17. Driving through traffic it
-is 450 to 650 draws, 90 to 110 ms of the drawing thread and 9 to 11 frames a second. The
-drawing thread is what a frame waits for now, and what it does is no longer one thing: a
-texture and a draw for every mesh, a matrix for every atomic, a dozen changes of program at
-a third of a millisecond each, the immediate draws, and in traffic what comes in from the
-disc while driving.
+pipeline; 24.4 with the drawing thread, immediate mode from memory, shared buffers and the
+lights' arithmetic only where there are lights; 26 to 27 with atlases, 160 draws a frame
+and 55 immediate ones, for which the drawing thread works 36.5 ms and the game's own 17.
+Facing a wall it is the game's own limit of 30.
+
+A run now drives itself (`REVC_KEYS=13@3,13@6,s@8,70@52,87@60-65.5,68@61.4-63.2,65@66.5-68.2,87@67.5-72,83@73-75.5`:
+into the car, out of the alley and right, left at the lights, and to a stop), and what it
+does is seen afterwards in a frame for every second (`REVC_FRAMESHOT=1k`, `phone.py frames`).
+Along it: 22 frames a second pulling away, 17 through the junction while the next streets
+come in from the disc (two frames in three over 50 ms there), 25 to 27 parked at its end;
+without atlases 19, 16 and 19 to 22. An earlier player's drive through traffic, at 450 to
+650 draws a frame without atlases, was 9 to 11.
+
+The drawing thread is what a frame waits for, and it is not waiting for the GPU at this
+size: the swap is 2.5 ms of its frame. The same calls made on the game's own thread take
+28 ms where the drawing thread takes 36.5: two threads at work get in each other's way
+(the caches, most likely), which is the price of having them side by side. What the thread
+does is no longer one thing: a draw for every atlas an atomic's meshes are in, a matrix for
+every atomic, fifteen changes of program a frame at a third of a millisecond each (the
+world, vehicles, people and the immediate draws take turns), the immediate draws at some
+200 microseconds each, and while driving what comes in from the disc.
 
 What has been checked, and on what:
 
@@ -163,7 +217,7 @@ What has been checked, and on what:
 | The package | on both phones: it installs through the Device Portal, loads and starts | other builds of Windows 10 Mobile, other phones |
 | The shell | the files screen and the copy of the game, on both; a player's 23 minutes with the on-screen pad (Elite x3); by snapshots of its XAML (`REVC_SNAPSHOT`, below), the pad as laid out for a vehicle, on foot and in a menu, with PlayStation's and Xbox's names | the radio buttons and the PS/XBOX button under a finger; a copy that is cut short and goes on at the next start; a real gamepad; a keyboard |
 | The game | on both phones, by the log and by saved frames: the menu, a new game, the cutscene, on foot, driving; the game's own gamepad menu. On the build PC, `tools/test_game.py`: the start up to the first file of the game, at OpenGL ES 3.0 and 2.0 | anything past the first minutes; saving and loading |
-| Graphics | on both phones: the frames above, at OpenGL ES 3.0 and at 2.0. On the build PC, `tools/test_render.py`: every shader program librw and the game make compiles and links at Direct3D feature levels 11, 10_0, 9_3 and 9_1; a skinned triangle lands where its bone puts it; atomics and an immediate triangle are drawn and read back, with shared buffers filled, emptied and filled again; each level a second time with OpenGL on the drawing thread | Direct3D level 9_1 with the game's data |
+| Graphics | on both phones: the frames above, at OpenGL ES 3.0 and at 2.0. On the build PC, `tools/test_render.py`: every shader program librw and the game make compiles and links at Direct3D feature levels 11, 10_0, 9_3 and 9_1; a skinned triangle lands where its bone puts it; atomics and an immediate triangle are drawn and read back, with shared buffers filled, emptied and filled again; two textures are put into an atlas and two meshes drawn from it as one, as a list of triangles and as strips; each level a second time with OpenGL on the drawing thread | Direct3D level 9_1 with the game's data |
 | Sound | on the build PC (x64), `tools/test_audio.py`: OpenAL Soft with the port's XAudio2 backend opens, mixes at the rate of the clock, stops, closes and opens again. On both phones the game opens its audio with one warning from OpenAL Soft, that there is nothing to record with | whether it is heard on a phone: nobody has said |
 
 Two things the first runs taught, both below: the app's first crash was not where the log
@@ -399,15 +453,16 @@ takes it away again, which is not to be forgotten: they stay until removed.
 | `REVC_ANGLE_FL=9_3` | a phone with a level 11 GPU takes the path of one with 9_3 (OpenGL ES 2.0) |
 | `REVC_RESOLUTION=50` | the render target for this run, in per cent of the panel (0: as the app chooses itself, 720 lines at most, 432 on a GPU of Direct3D level 9), whatever the RES button says |
 | `REVC_VERBOSE=1` | everything the game prints goes into the log |
-| `REVC_FRAMESHOT=5` | the game's picture, every five seconds, as `LocalState\frame.bmp` (640 wide at most): `phone.py file frame.bmp`, which makes a PNG of it too |
-| `REVC_KEYS=13@3,13@6,s@8` | keys pressed by the clock, which starts when the game's menu first comes up: virtual key 13 (Enter) after 3 seconds and again after 6 (a new game), and from 8 on every cutscene is skipped as it starts. With the frames, a way into the game from the PC |
+| `REVC_FRAMESHOT=5` | the game's picture, every five seconds, as `LocalState\frame.bmp` (640 wide at most): `phone.py file frame.bmp`, which makes a PNG of it too. `REVC_FRAMESHOT=1k` keeps every one, a second apart, as `frame_001.bmp` and so on (320 wide), each logged with the time on the clock of `REVC_KEYS`; `phone.py frames` fetches them, takes them off the phone and puts them on one sheet, `frames.png` (with PIL), which is how a scripted drive is seen and corrected |
+| `REVC_KEYS=13@3,13@6,s@8` | keys pressed by the clock, which starts when the game's menu first comes up: virtual key 13 (Enter) after 3 seconds and again after 6 (a new game), and from 8 on every cutscene is skipped as it starts. `87@45-75` holds a key from 45 to 75: W, the accelerator of the game's PC keys (65 and 68, A and D, steer; 83, S, brakes), so that a run drives itself. With the frames, a way into the game from the PC |
 | `REVC_PERF=1` | every ten seconds, the draws of a frame and the time in them (`perf: 290 draws a frame: vertex input 1.1 ms, state and uniforms 2.6 ms, the draw calls 41.1 ms; 55 immediate draws, 13.3 ms`; with a drawing thread that is the time to queue them, and its own is in the line `the drawing thread worked 44.2 ms a frame on 1437 calls`), what changed between them (`12 programs, 342 uniforms, 305 textures (208 different ones), ... 73 vertex arrays, 40 blend`), and without a drawing thread what a draw call took by what was changed before it |
 | `REVC_GL_THREAD=0` (`1`) | OpenGL ES is called on the game's own thread, as on a phone with OpenGL ES 3.0; `1` gives such a phone the drawing thread |
 | `REVC_BENCH=1` | when the menu first comes up: what a draw costs on this phone, and each kind of change between two draws (`bench:` lines; *The slow phone* above has a Lumia 650's) |
 | `REVC_FULL_DETAIL=1`, `REVC_PS2_ALPHA=1` | a phone with OpenGL ES 2.0 keeps vehicles in full detail up to 70 m, or the PlayStation 2's alpha test |
-| `REVC_NO_SHADER_CACHE=1`, `LIBRW_NO_VERTEX_ARRAYS=1`, `LIBRW_NO_VERTICES_FROM_MEMORY=1`, `LIBRW_NO_SHARED_BUFFERS=1` | without the kept programs, without vertex array objects, with a buffer filled for every immediate draw, with buffers of its own for every geometry: to tell what each is worth |
+| `REVC_NO_SHADER_CACHE=1`, `LIBRW_NO_VERTEX_ARRAYS=1`, `LIBRW_NO_VERTICES_FROM_MEMORY=1`, `LIBRW_NO_SHARED_BUFFERS=1`, `LIBRW_NO_ATLASES=1` | without the kept programs, without vertex array objects, with a buffer filled for every immediate draw, with buffers of its own for every geometry, with a draw and a texture of its own for every mesh: to tell what each is worth |
 | `LIBRW_PAGE_VERTICES=16384` | how many vertices a page of shared buffers holds (65536 at most, which is what it is left at) |
-| `REVC_PROGRAMS=all` (`few`) | a phone with OpenGL ES 2.0 picks the cheapest of a pipeline's four programs for each mesh again; `few` gives a phone with 3.0 the one program for all |
+| `LIBRW_HALF_TEXTURES=1` | textures of 64 pixels and more each way are made half as wide and half as high as they are read: a measurement of what their size costs (*The slow phone*), with a blurred picture |
+| `REVC_PROGRAMS=all` (`few`, `noat`) | a phone with OpenGL ES 2.0 picks the cheapest of a pipeline's four programs for each mesh again; `few`: the one with the lights for every mesh (and on a phone with 3.0, the same); `noat`: nothing is discarded by the alpha test, a measurement of what it costs the GPU and not a picture |
 | `REVC_SNAPSHOT=1` | the shell saves its XAML (the files screen, the pad; the game's picture is not XAML and comes out black) as `LocalState\snapshot.png` whenever it changes: `phone.py file snapshot.png` |
 | `REVC_PAD_PREVIEW=menu` (`foot`, `vehicle`, `cutscene`; `vehicle-xbox`...) | the pad as it is in that part of the game, without a game, with Xbox's names for `-xbox`: with the snapshot, a look at its layout from the PC |
 | `ALSOFT_LOGLEVEL=3` | OpenAL Soft says what it does, into the log |

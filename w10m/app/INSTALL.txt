@@ -76,8 +76,8 @@ SLOWER PHONES
 On phones whose graphics chip stops at Direct3D level 9 (the Lumia 550, 650 and the like), the
 first start keeps the screen black for a little over a minute while the game's shaders are
 prepared; they are kept, and later starts take a quarter of a minute. The game itself runs at
-about 20 frames a second standing in a street on a Lumia 650 and about 10 in traffic: the menus
-are fine, the city is slow. To spare such a phone the game is drawn at 432 lines there unless
+about 26 frames a second standing in a street on a Lumia 650 and 17 to 22 driving: the menus
+are fine, the city is slower than on a faster phone. To spare such a phone the game is drawn at 432 lines there unless
 RES says otherwise (at 720 lines it is slower), draws distant vehicles in low
 detail, uses its plain colour filter and its shortest draw distance (the last two can be
 changed in Options > Display). On an HP Elite x3 it runs at the game's full 30 frames a
@@ -168,8 +168,8 @@ Grand Theft Auto: Vice City на телефонах с Windows 10 Mobile (ARM). 
 На телефонах, чей графический чип не идёт дальше Direct3D уровня 9 (Lumia 550, 650 и подобные),
 при первом запуске экран чуть больше минуты остаётся чёрным, пока готовятся шейдеры игры; они
 сохраняются, и следующие запуски занимают четверть минуты. Сама игра на Lumia 650 идёт со
-скоростью около 20 кадров в секунду, если стоять на улице, и около 10 в потоке машин: меню
-работает нормально, город — медленно. Чтобы поберечь такой телефон, игра на нём рисуется в 432
+скоростью около 26 кадров в секунду, если стоять на улице, и 17–22 в поездке: меню
+работает нормально, город — медленнее, чем на телефоне побыстрее. Чтобы поберечь такой телефон, игра на нём рисуется в 432
 строки, если кнопкой RES не выбрано иное (в 720 строк она медленнее), рисует
 дальние машины упрощённо, включает простой цветовой фильтр и наименьшую дальность прорисовки
 (последние два можно изменить в настройках экрана игры). На HP Elite x3 игра идёт на полных 30

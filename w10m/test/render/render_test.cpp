@@ -255,6 +255,149 @@ static Atomic* WholePicture(uint8 red, uint8 green, uint8 blue) {
     return atomic;
 }
 
+// A texture of one colour, 16 by 16, DXT1, with its first level kept as a texture read
+// from a dictionary while atlases are being collected for has it.
+static Texture* OneColour(uint16 colour565, const char* name) {
+    Raster* raster = Raster::create(16, 16, 16, Raster::C565 | Raster::TEXTURE | Raster::DONTALLOCATE, PLATFORM_GL3);
+    allocateDXT(raster, 1, 1, 0);
+    uint8* px = raster->lock(0, Raster::LOCKWRITE | Raster::LOCKNOFETCH);
+    for (int block = 0; block < 16; block++) {
+        uint8* b = px + block * 8;
+        b[0] = b[2] = static_cast<uint8>(colour565);
+        b[1] = b[3] = static_cast<uint8>(colour565 >> 8);
+        b[4] = b[5] = b[6] = b[7] = 0;
+    }
+    Gl3Raster* natras = GETGL3RASTEREXT(raster);
+    natras->atlasPixels = rwNewT(uint8, 16 * 8, MEMDUR_EVENT | ID_DRIVER);
+    memcpy(natras->atlasPixels, px, 16 * 8);
+    raster->unlock(0);
+    Texture* texture = Texture::create(raster);
+    strcpy(texture->name, name);
+    texture->filterAddressing = Texture::WRAP << 12 | Texture::WRAP << 8 | Texture::LINEAR;
+    return texture;
+}
+
+// Two triangles, the left half of the picture and the right, each with a texture of its own
+// and texture coordinates that go round it more than once.
+static Atomic* TwoTextures(Texture* left, Texture* right, bool strips, gl3::ObjPipeline* pipeline) {
+    Geometry* geometry = Geometry::create(
+        6, 2, Geometry::POSITIONS | Geometry::TEXTURED | Geometry::PRELIT | Geometry::MODULATE | (strips ? Geometry::TRISTRIP : 0));
+    const V3d corners[6] = {{-3.0f, -3.0f, 10.0f}, {-0.05f, -3.0f, 10.0f}, {-0.05f, 3.0f, 10.0f},
+                            {3.0f, -3.0f, 10.0f},  {0.05f, 3.0f, 10.0f},   {0.05f, -3.0f, 10.0f}};
+    const float uv[3][2] = {{0.25f, 0.25f}, {2.75f, 0.5f}, {1.5f, 3.25f}};
+    Texture* textures[2] = {left, right};
+    for (int i = 0; i < 6; i++) {
+        geometry->morphTargets[0].vertices[i] = corners[i];
+        geometry->colors[i] = {255, 255, 255, 255};
+        geometry->texCoords[0][i].u = uv[i % 3][0];
+        geometry->texCoords[0][i].v = uv[i % 3][1];
+    }
+    for (int t = 0; t < 2; t++) {
+        Material* material = Material::create();
+        material->color = {255, 255, 255, 255};
+        material->setTexture(textures[t]);
+        for (int i = 0; i < 3; i++) geometry->triangles[t].v[i] = static_cast<uint16>(t * 3 + i);
+        geometry->triangles[t].matId = static_cast<uint16>(geometry->matList.appendMaterial(material));
+        material->destroy();  // the geometry's list has it
+    }
+    geometry->calculateBoundingSphere();
+    geometry->buildMeshes();
+    Atomic* atomic = Atomic::create();
+    atomic->setFrame(Frame::create());
+    atomic->setGeometry(geometry, 0);
+    atomic->pipeline = pipeline;
+    return atomic;
+}
+
+static bool HalvesAre(int width, int height, const char* what) {
+    unsigned char a[4] = {}, b[4] = {};
+    glReadPixels(width / 4, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, a);
+    glReadPixels(width * 3 / 4, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    bool redGreen = a[0] > 240 && a[1] < 16 && a[2] < 16 && b[0] < 16 && b[1] > 240 && b[2] < 16;
+    bool greenRed = b[0] > 240 && b[1] < 16 && b[2] < 16 && a[0] < 16 && a[1] > 240 && a[2] < 16;
+    if (!redGreen && !greenRed)
+        std::printf("      %s: %d,%d,%d and %d,%d,%d where red and green were drawn\n", what, a[0], a[1], a[2], b[0], b[1], b[2]);
+    return redGreen || greenRed;
+}
+
+// Atlases (OpenGL ES 2.0 with DXT textures): the two textures of a dictionary go into one,
+// and an atomic whose two meshes differ in nothing else is one draw from it, each half in
+// the colour of its own texture; as a list of triangles and as strips, which are joined.
+static void Atlases(int width, int height) {
+    if (!gl3Caps.atlases) {
+        std::printf("      atlases: none\n");
+        return;
+    }
+    int texturesBefore = Texture::numAllocated;
+    TexDictionary* dictionary = TexDictionary::create();
+    Texture* red = OneColour(0xF800, "red");
+    Texture* green = OneColour(0x07E0, "green");
+    dictionary->add(red);
+    dictionary->add(green);
+    makeAtlases(dictionary);
+    Gl3Raster* first = GETGL3RASTEREXT(red->raster);
+    Gl3Raster* second = GETGL3RASTEREXT(green->raster);
+    bool made = first->atlas && first->atlas == second->atlas && first->atlasPixels == nil;
+    Check(made, "two textures of a dictionary are put into one atlas");
+    if (!made) return;
+    std::printf("      atlas: %dx%d; red at %.3f,%.3f, green at %.3f,%.3f, each %.3f by %.3f of it\n",
+                first->atlas->raster->width, first->atlas->raster->height, first->atlasRect[0], first->atlasRect[1],
+                second->atlasRect[0], second->atlasRect[1], first->atlasRect[2], first->atlasRect[3]);
+
+    gl3::ObjPipeline* pipeline = gl3::ObjPipeline::create();
+    pipeline->instanceCB = atlasInstanceCB;
+    pipeline->renderCB = defaultRenderCB;
+
+    Camera* camera = Camera::create();
+    camera->setFrame(Frame::create());
+    camera->frameBuffer = Raster::create(width, height, 0, Raster::CAMERA);
+    camera->zBuffer = Raster::create(width, height, 0, Raster::ZBUFFER);
+    camera->setNearPlane(0.1f);
+    camera->setFarPlane(100.0f);
+    V2d window = {1.0f, 1.0f};
+    camera->setViewWindow(&window);
+    camera->setProjection(Camera::PARALLEL);
+    camera->beginUpdate();
+    SetRenderState(ZTESTENABLE, 0);
+    SetRenderState(ZWRITEENABLE, 0);
+    SetRenderState(CULLMODE, CULLNONE);
+    SetRenderState(FOGENABLE, 0);
+
+    bool32 counting = perf.enabled;
+    perf.enabled = 1;
+    for (int strips = 0; strips < 2; strips++) {
+        Atomic* atomic = TwoTextures(red, green, strips != 0, pipeline);
+        glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        perf.merged = perf.draws = 0;
+        atomic->render();
+        gl3::InstanceDataHeader* header = (gl3::InstanceDataHeader*)atomic->geometry->instData;
+        bool isStrips = header->primType == GL_TRIANGLE_STRIP;
+        bool picture = HalvesAre(width, height, strips ? "two meshes of strips from an atlas" : "two meshes from an atlas");
+        std::printf("      %s: %d meshes from the atlas, %d draw%s, %d indices\n", isStrips ? "strips" : "triangles",
+                    (int)header->numAtlased, (int)perf.draws, perf.draws == 1 ? "" : "s", (int)header->totalNumIndex);
+        Check(picture && header->numAtlased == 2 && perf.draws == 1 && perf.merged == 1,
+              isStrips ? "two meshes of strips are one draw from the atlas, each in its own texture's colour"
+                       : "two meshes are one draw from the atlas, each in its own texture's colour");
+        // the materials told apart again: two draws, the same picture
+        atomic->geometry->matList.materials[1]->color.alpha = 254;
+        glClear(GL_COLOR_BUFFER_BIT);
+        perf.merged = perf.draws = 0;
+        atomic->render();
+        Check(HalvesAre(width, height, "two meshes with two colours") && perf.draws == 2 && perf.merged == 0,
+              "meshes whose materials differ are drawn one by one, from the atlas still");
+        Geometry* geometry = atomic->geometry;
+        atomic->destroy();
+        geometry->destroy();
+    }
+    perf.enabled = counting;
+    camera->endUpdate();
+    Check(glGetError() == GL_NO_ERROR, "no OpenGL error while drawing from the atlas");
+    // the atlas lives as long as one of its textures does
+    dictionary->destroy();
+    Check(Texture::numAllocated == texturesBefore, "the atlas goes when its textures have gone");
+}
+
 static bool CentreIs(int width, int height, int red, int green, int blue, const char* what) {
     unsigned char pixel[4] = {};
     glReadPixels(width / 2, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
@@ -410,6 +553,7 @@ int main() {
         int width = 0, height = 0;
         glfwGetFramebufferSize(window, &width, &height);
         InstancedAtomics(width, height);
+        Atlases(width, height);
     }
 
     LibrwPrograms();

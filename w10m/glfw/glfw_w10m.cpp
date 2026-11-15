@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <atomic>
 #include <deque>
 #include <string>
 #include <vector>
@@ -92,6 +93,10 @@ EGLConfig gConfig = nullptr;
 int gSwapInterval = -1;
 HostPad gPad;
 std::deque<MouseStep> gMouse;
+// What the swaps themselves took on the drawing thread, for NotePerformance: where the GPU
+// is behind, it is here that the thread waits for it.
+std::atomic<LONGLONG> gShowTicks{0};
+LONGLONG gScriptStart;  // when the clock of REVC_KEYS began: 0 until the menu is up
 
 void Fail(const char* what) {
     char text[160];
@@ -306,9 +311,10 @@ void NotePerformance(LONGLONG swapStart, LONGLONG swapEnd, GLFWwindow* window) {
         // the two threads' shares: the frame takes the longer of them, not their sum
         GltStats stats;
         glt_stats(&stats);
-        host_logf("perf: the drawing thread worked %.1f ms a frame on %.0f calls; the game's thread waited for "
-                  "%u calls with an answer (%.1f ms a frame) and found the queue full %u times",
-                  stats.drawingMs / frames, (double)stats.calls / frames, (unsigned)stats.answers,
+        host_logf("perf: the drawing thread worked %.1f ms a frame on %.0f calls, %.1f ms of it in the swap; the game's "
+                  "thread waited for %u calls with an answer (%.1f ms a frame) and found the queue full %u times",
+                  stats.drawingMs / frames, (double)stats.calls / frames,
+                  gShowTicks.exchange(0) * 1000.0 / (double)frequency.QuadPart / frames, (unsigned)stats.answers,
                   stats.answerWaitMs / frames, (unsigned)stats.timesFull);
     }
     windowStart = swapEnd;
@@ -343,19 +349,22 @@ struct GlCalls {
 // shown is saved as LocalState\frame.bmp (640 wide at most), to be fetched with
 // tools/phone.py file frame.bmp. The shell's own snapshots (REVC_SNAPSHOT) have its XAML only.
 void SaveFrame(GLFWwindow* window, int frame) {
-    static int every = -1;  // seconds; 0: off
+    static double every = -1;  // seconds; 0: off
+    static bool keep;          // REVC_FRAMESHOT=1.5k: every one under a name of its own, frame_001.bmp...
+    static int kept;
     static LONGLONG last;
     static GlCalls gl;
     if (every < 0) {
         const char* value = getenv("REVC_FRAMESHOT");
-        every = value ? atoi(value) : 0;
-        if (value && every < 1) every = 1;
+        every = value ? atof(value) : 0;
+        keep = value && strchr(value, 'k');
+        if (value && every < 0.2) every = keep ? 0.2 : 1;
         if (every) {
             gl.readPixels = reinterpret_cast<decltype(gl.readPixels)>(eglGetProcAddress("glReadPixels"));
             gl.getIntegerv = reinterpret_cast<decltype(gl.getIntegerv)>(eglGetProcAddress("glGetIntegerv"));
             gl.bindFramebuffer = reinterpret_cast<decltype(gl.bindFramebuffer)>(eglGetProcAddress("glBindFramebuffer"));
             if (!gl.readPixels || !gl.getIntegerv || !gl.bindFramebuffer || !host_local_folder()) every = 0;
-            host_logf("glfw: REVC_FRAMESHOT, frame.bmp every %d s", every);
+            host_logf("glfw: REVC_FRAMESHOT, %s every %.1f s", keep ? "a frame_NNN.bmp" : "frame.bmp", every);
         }
     }
     if (!every || (last && SecondsSince(last) < every)) return;
@@ -380,7 +389,7 @@ void SaveFrame(GLFWwindow* window, int frame) {
         },
         &grab);
     // a BMP's rows go bottom to top, as OpenGL's do
-    int step = (w + 639) / 640;
+    int step = keep ? (w + 319) / 320 : (w + 639) / 640;  // a series is of small pictures
     int outW = w / step, outH = h / step;
     int stride = (outW * 3 + 3) & ~3;
     std::vector<unsigned char> file(54 + (size_t)stride * outH);
@@ -408,27 +417,32 @@ void SaveFrame(GLFWwindow* window, int frame) {
     }
     // under another name first: the Device Portal must not be handed half a file
     std::wstring folder = host_local_folder();
-    std::wstring partial = folder + L"\\frame.tmp", whole = folder + L"\\frame.bmp";
+    wchar_t name[32] = L"\\frame.bmp";
+    if (keep) swprintf(name, 32, L"\\frame_%03d.bmp", ++kept);
+    std::wstring partial = folder + L"\\frame.tmp", whole = folder + name;
     FILE* out = _wfopen(partial.c_str(), L"wb");
     if (!out) return;
     bool written = fwrite(file.data(), 1, file.size(), out) == file.size();
     fclose(out);
     if (written && MoveFileExW(partial.c_str(), whole.c_str(), MOVEFILE_REPLACE_EXISTING))
-        host_logf("glfw: frame.bmp is frame %d, %dx%d", frame, outW, outH);
+        // with the script's clock, which is what the keys of REVC_KEYS are timed by
+        host_logf("glfw: %ls is frame %d, %dx%d, at %.1f s of the script's clock", name + 1, frame, outW, outH,
+                  gScriptStart ? SecondsSince(gScriptStart) : -1.0);
 }
 
 // REVC_KEYS=13@3,13@6,s@8: virtual key 13 (Enter) goes down 3 seconds after the game's menu
 // first came up, and again at 6 (a new game, from the first menu); each comes up again in a
 // later poll, as a finger's would. s: from then on a cutscene is skipped as it starts. The
 // clock starts with the menu because what comes before it takes six seconds on one phone and
-// eighty on another.
+// eighty on another. 87@30-50: the key (W, the accelerator of the game's PC keys) is held
+// from 30 to 50, which is how a run drives itself: 65 and 68 (A, D) steer, 83 (S) brakes.
 struct ScriptedKey {
     int vk;  // 0: skip the cutscenes
     double at;
+    double until;  // when it comes up again
     int state;  // 0: to come, 1: down, 2: done
 };
 std::vector<ScriptedKey> gScript;
-LONGLONG gScriptStart;  // 0 until the menu is up
 
 void LoadScript() {
     gScript.clear();
@@ -445,7 +459,9 @@ void LoadScript() {
         }
         if (*end != '@') break;
         double at = strtod(end + 1, &end);
-        gScript.push_back({(int)vk, at, 0});
+        double until = at + 0.15;
+        if (*end == '-') until = strtod(end + 1, &end);
+        gScript.push_back({(int)vk, at, until, 0});
         if (*end != ',') break;
         text = end + 1;
     }
@@ -460,7 +476,7 @@ void StepScript(GLFWwindow* window, int32_t context) {
     }
     double now = SecondsSince(gScriptStart);
     for (ScriptedKey& key : gScript) {
-        if (key.state == 2 || now < key.at + (key.state ? 0.15 : 0.0)) continue;
+        if (key.state == 2 || now < (key.state ? key.until : key.at)) continue;
         if (key.vk == 0) {
             host_log("glfw: scripted: cutscenes are skipped from here on");
             reVC_W10M_SkipCutscenes();
@@ -480,10 +496,12 @@ void StepScript(GLFWwindow* window, int32_t context) {
 void Show(void* param) {
     GLFWwindow* window = static_cast<GLFWwindow*>(param);
     static int shown;
+    LONGLONG from = Ticks();
     if (!eglSwapBuffers(gDisplay, window->surface)) {
         static int noted;
         if (noted++ < 8) Fail("eglSwapBuffers");
     }
+    gShowTicks.fetch_add(Ticks() - from, std::memory_order_relaxed);
     // the first ones by name: what a phone does next has more than once depended on them
     if (++shown <= 3) host_logf("glfw: frame %d is shown (swap interval %d)", shown, gSwapInterval);
 }

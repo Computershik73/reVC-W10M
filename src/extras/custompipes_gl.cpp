@@ -266,7 +266,12 @@ CreateWorldPipe(void)
 
 
 	rw::gl3::ObjPipeline *pipe = rw::gl3::ObjPipeline::create();
+#ifdef GTA_W10M
+	// with where each vertex's texture is in an atlas, where there are atlases
+	pipe->instanceCB = rw::gl3::atlasInstanceCB;
+#else
 	pipe->instanceCB = rw::gl3::defaultInstanceCB;
+#endif
 	pipe->uninstanceCB = nil;
 	pipe->renderCB = worldRenderCB;
 	worldPipe = pipe;
@@ -365,7 +370,11 @@ CreateGlossPipe(void)
 	}
 
 	rw::gl3::ObjPipeline *pipe = rw::gl3::ObjPipeline::create();
+#ifdef GTA_W10M
+	pipe->instanceCB = rw::gl3::atlasInstanceCB;
+#else
 	pipe->instanceCB = rw::gl3::defaultInstanceCB;
+#endif
 	pipe->uninstanceCB = nil;
 	pipe->renderCB = glossRenderCB;
 	glossPipe = pipe;

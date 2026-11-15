@@ -129,7 +129,15 @@ CTxdStore::LoadTxd(int slot, RwStream *stream)
 	TxdDef *def = GetSlot(slot);
 
 	if(RwStreamFindChunk(stream, rwID_TEXDICTIONARY, nil, nil)){
+#ifdef GTA_W10M
+		// the dictionary's textures are put into atlases too (librw, makeAtlases)
+		rw::gl3::collectForAtlases = true;
+#endif
 		def->texDict = RwTexDictionaryGtaStreamRead(stream);
+#ifdef GTA_W10M
+		rw::gl3::collectForAtlases = false;
+		rw::gl3::makeAtlases(def->texDict);
+#endif
 		return def->texDict != nil;
 	}
 	printf("Failed to load TXD\n");
@@ -159,7 +167,13 @@ CTxdStore::StartLoadTxd(int slot, RwStream *stream)
 {
 	TxdDef *def = GetSlot(slot);
 	if(RwStreamFindChunk(stream, rwID_TEXDICTIONARY, nil, nil)){
+#ifdef GTA_W10M
+		rw::gl3::collectForAtlases = true;
+#endif
 		def->texDict = RwTexDictionaryGtaStreamRead1(stream);
+#ifdef GTA_W10M
+		rw::gl3::collectForAtlases = false;
+#endif
 		return def->texDict != nil;
 	}else{
 		printf("Failed to load TXD\n");
@@ -171,7 +185,14 @@ bool
 CTxdStore::FinishLoadTxd(int slot, RwStream *stream)
 {
 	TxdDef *def = GetSlot(slot);
+#ifdef GTA_W10M
+	rw::gl3::collectForAtlases = true;
+#endif
 	def->texDict = RwTexDictionaryGtaStreamRead2(stream, def->texDict);
+#ifdef GTA_W10M
+	rw::gl3::collectForAtlases = false;
+	rw::gl3::makeAtlases(def->texDict);
+#endif
 	return def->texDict != nil;
 }
 
