@@ -106,6 +106,34 @@ public:
         help.Margin({0, 20, 0, 0});
         column_.Children().Append(help);
 
+        Credits(column_);
+
+        scroll.Content(column_);
+        root_.Children().Append(scroll);
+        host.Children().Append(root_);
+    }
+
+    // Who made the port, as the About of venetium-w10m and of gecko-w10m has it, and whose the
+    // game's code is. At the foot of this screen, and over the game from "About the port" in
+    // its Options menu (App.cpp): on a dark background in both places.
+    static void Credits(winrt::Windows::UI::Xaml::Controls::Panel const& column) {
+        auto ported = Text(T(L"Ported to Windows 10 Mobile by Computershik",
+                             L"Порт на Windows 10 Mobile: Computershik"),
+                           15, 0xFFFFFFFF);
+        ported.Margin({0, 24, 0, 0});
+        column.Children().Append(ported);
+        column.Children().Append(Text(T(L"Porting, building and debugging on the device.",
+                                        L"Портирование, сборка и отладка на устройстве."),
+                                      12, 0xB3FFFFFF));
+        column.Children().Append(Link(T(L"Profile on 4pda", L"Профиль на 4pda"),
+                                      L"https://4pda.to/forum/index.php?showuser=4458524"));
+        column.Children().Append(Link(T(L"Telegram channel @cmplog", L"Канал в Telegram: @cmplog"), L"https://t.me/cmplog"));
+        column.Children().Append(Link(T(L"Donate (within the CIS for now)", L"Поддержать разработчика (пока только из СНГ)"),
+                                      L"https://pay.cloudtips.ru/p/83821e32"));
+        column.Children().Append(Text(T(L"Outside the CIS and would like to help? Send a message to the Telegram channel.",
+                                        L"Вы не из СНГ и хотите помочь? Напишите в канал в Telegram."),
+                                      12, 0xB3FFFFFF));
+
         auto about = Text(
             T(L"reVC is the reverse-engineered source of the game (github.com/mrxenginner/reVC); this port "
               L"builds on its Android fork (github.com/codepdbh/revc-android-port-evolved). It is not made or "
@@ -115,11 +143,7 @@ public:
               L"Rockstar Games и Take-Two Interactive не имеют к нему отношения."),
             12, 0x99FFFFFF);
         about.Margin({0, 20, 0, 0});
-        column_.Children().Append(about);
-
-        scroll.Content(column_);
-        root_.Children().Append(scroll);
-        host.Children().Append(root_);
+        column.Children().Append(about);
     }
 
     std::wstring const& Folder() const { return game_; }
@@ -152,6 +176,12 @@ public:
     }
 
     void Close() { root_.Visibility(winrt::Windows::UI::Xaml::Visibility::Collapsed); }
+
+    // The foot of the screen, for a look at it from the PC (REVC_FILES_SCREEN=end)
+    void ShowEnd() {
+        scroll_.UpdateLayout();
+        scroll_.ChangeView(nullptr, scroll_.ScrollableHeight(), nullptr, true);
+    }
 
     bool Visible() const { return root_.Visibility() == winrt::Windows::UI::Xaml::Visibility::Visible; }
 
@@ -186,6 +216,16 @@ private:
         t.TextWrapping(winrt::Windows::UI::Xaml::TextWrapping::Wrap);
         if (bold) t.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
         return t;
+    }
+
+    // Opens in the phone's browser
+    static winrt::Windows::UI::Xaml::Controls::HyperlinkButton Link(const wchar_t* text, const wchar_t* uri) {
+        winrt::Windows::UI::Xaml::Controls::HyperlinkButton b;
+        b.Content(winrt::box_value(winrt::hstring(text)));
+        b.NavigateUri(winrt::Windows::Foundation::Uri(uri));
+        b.FontSize(15);
+        b.Padding({0, 6, 0, 6});
+        return b;
     }
 
     static winrt::Windows::UI::Xaml::Controls::Button MakeButton(const wchar_t* text) {
@@ -283,7 +323,7 @@ private:
     }
 
     static winrt::Windows::Foundation::IAsyncAction Message(winrt::hstring text) {
-        winrt::Windows::UI::Popups::MessageDialog dialog(text);
+        auto dialog = Dialog(text);
         co_await dialog.ShowAsync();
     }
 

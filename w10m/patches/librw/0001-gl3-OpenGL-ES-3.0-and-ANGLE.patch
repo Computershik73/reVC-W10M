@@ -375,7 +375,7 @@ index 6a4c8dd..1c8a00c 100644
  }
  #endif
 diff --git a/src/gl/gl3immed.cpp b/src/gl/gl3immed.cpp
-index b66b7e5..464792f 100644
+index b66b7e5..96f2f42 100644
 --- a/src/gl/gl3immed.cpp
 +++ b/src/gl/gl3immed.cpp
 @@ -63,6 +63,7 @@ openIm2D(void)
@@ -386,7 +386,7 @@ index b66b7e5..464792f 100644
  	glGenBuffers(1, &im2DIbo);
  	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im2DIbo);
  	glBufferData(GL_ELEMENT_ARRAY_BUFFER, STARTINDICES*2, nil, GL_STREAM_DRAW);
-@@ -125,16 +126,71 @@ im2DSetXform(void)
+@@ -125,16 +126,76 @@ im2DSetXform(void)
  //	glUniform4fv(currentShader->uniformLocations[u_xform], 1, xform);
  }
  
@@ -411,9 +411,14 @@ index b66b7e5..464792f 100644
 +immediateDone(uint64 t0)
 +{
 +	if(perf.enabled){
-+		perf.immediateNs += perfNow() - t0;
++		uint64 took = perfNow() - t0;
++		perf.immediateNs += took;
 +		perf.immediates++;
 +		perf.changed = 0;
++		if(took > 1000000){
++			perf.immediateLongNs += took;
++			perf.immediateLong++;
++		}
 +	}
 +}
 +
@@ -460,7 +465,7 @@ index b66b7e5..464792f 100644
  
  	if(im2dOverrideShader)
  		im2dOverrideShader->use();
-@@ -151,6 +207,7 @@ im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
+@@ -151,6 +212,7 @@ im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
  #ifndef RW_GL_USE_VAOS
  	disableAttribPointers(im2dattribDesc, 3);
  #endif
@@ -468,7 +473,7 @@ index b66b7e5..464792f 100644
  }
  
  void
-@@ -158,17 +215,32 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
+@@ -158,17 +220,32 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
  	void *vertices, int32 numVertices,
  	void *indices, int32 numIndices)
  {
@@ -505,7 +510,7 @@ index b66b7e5..464792f 100644
  
  	if(im2dOverrideShader)
  		im2dOverrideShader->use();
-@@ -186,6 +258,7 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
+@@ -186,6 +263,7 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
  #ifndef RW_GL_USE_VAOS
  	disableAttribPointers(im2dattribDesc, 3);
  #endif
@@ -513,7 +518,7 @@ index b66b7e5..464792f 100644
  }
  
  
-@@ -219,6 +292,7 @@ openIm3D(void)
+@@ -219,6 +297,7 @@ openIm3D(void)
  	im3dShader = Shader::create(vs, fs);
  	assert(im3dShader);
  
@@ -521,7 +526,7 @@ index b66b7e5..464792f 100644
  	glGenBuffers(1, &im3DIbo);
  	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, im3DIbo);
  	glBufferData(GL_ELEMENT_ARRAY_BUFFER, STARTINDICES*2, nil, GL_STREAM_DRAW);
-@@ -253,6 +327,8 @@ SurfaceProperties im3dSurfaceProps = { 1.0f, 1.0f, 1.0f };
+@@ -253,6 +332,8 @@ SurfaceProperties im3dSurfaceProps = { 1.0f, 1.0f, 1.0f };
  void
  im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
  {
@@ -530,7 +535,7 @@ index b66b7e5..464792f 100644
  	if(world == nil){
  		static Matrix ident;
  		ident.setIdentity();
-@@ -269,38 +345,60 @@ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
+@@ -269,38 +350,60 @@ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
  	if((flags & im3d::VERTEXUV) == 0)
  		SetRenderStatePtr(TEXTURERASTER, nil);
  
@@ -597,7 +602,7 @@ index b66b7e5..464792f 100644
  
  void
 diff --git a/src/gl/gl3matfx.cpp b/src/gl/gl3matfx.cpp
-index 06b01c1..04b4c57 100644
+index 06b01c1..9fc7842 100644
 --- a/src/gl/gl3matfx.cpp
 +++ b/src/gl/gl3matfx.cpp
 @@ -43,7 +43,9 @@ matfxDefaultRender(InstanceDataHeader *header, InstanceData *inst, int32 vsBits,
@@ -622,7 +627,7 @@ index 06b01c1..04b4c57 100644
  		if(getAlphaTest())
  			envShader->use();
  		else
-@@ -149,6 +153,32 @@ matfxEnvRender(InstanceDataHeader *header, InstanceData *inst, int32 vsBits, uin
+@@ -149,9 +153,36 @@ matfxEnvRender(InstanceDataHeader *header, InstanceData *inst, int32 vsBits, uin
  	rw::SetRenderState(SRCBLEND, BLENDSRCALPHA);
  }
  
@@ -655,7 +660,11 @@ index 06b01c1..04b4c57 100644
  void
  matfxRenderCB(Atomic *atomic, InstanceDataHeader *header)
  {
-@@ -163,6 +193,25 @@ matfxRenderCB(Atomic *atomic, InstanceDataHeader *header)
++	perf.pipe = 2;
+ 	uint32 flags = atomic->geometry->flags;
+ 	setWorldMatrix(atomic->getFrame()->getLTM());
+ 	int32 vsBits = lightingCB(atomic);
+@@ -163,6 +194,25 @@ matfxRenderCB(Atomic *atomic, InstanceDataHeader *header)
  	InstanceData *inst = header->inst;
  	int32 n = header->numMeshes;
  
@@ -1559,7 +1568,7 @@ index b7c3941..a2ec752 100644
  	}
  	return tex;
 diff --git a/src/gl/gl3render.cpp b/src/gl/gl3render.cpp
-index a02c5c0..fef14e8 100644
+index a02c5c0..2443829 100644
 --- a/src/gl/gl3render.cpp
 +++ b/src/gl/gl3render.cpp
 @@ -2,6 +2,8 @@
@@ -1571,7 +1580,7 @@ index a02c5c0..fef14e8 100644
  #include "../rwbase.h"
  #include "../rwerror.h"
  #include "../rwplg.h"
-@@ -20,9 +22,34 @@ namespace gl3 {
+@@ -20,9 +22,40 @@ namespace gl3 {
  
  #define MAX_LIGHTS 
  
@@ -1601,12 +1610,18 @@ index a02c5c0..fef14e8 100644
 +		perf.drawNsAfter[perf.changed & 7] += t2 - t1;
 +		perf.drawsAfter[perf.changed & 7]++;
 +		perf.changed = 0;
++		perf.pipeNs[perf.pipe & 3] += t2 - t1;
++		perf.pipeDraws[perf.pipe & 3]++;
++		if(t2 - t1 > 1000000){
++			perf.pipeLongNs[perf.pipe & 3] += t2 - t1;
++			perf.pipeLong[perf.pipe & 3]++;
++		}
 +		return;
 +	}
  	flushCache();
  	glDrawElements(header->primType, inst->numIndex,
  	               GL_UNSIGNED_SHORT, (void*)(uintptr)inst->offset);
-@@ -71,8 +98,73 @@ drawInst(InstanceDataHeader *header, InstanceData *inst)
+@@ -71,8 +104,73 @@ drawInst(InstanceDataHeader *header, InstanceData *inst)
  }
  
  
@@ -1680,7 +1695,7 @@ index a02c5c0..fef14e8 100644
  {
  	AttribDesc *a;
  	for(a = attribDescs; a != &attribDescs[numAttribs]; a++){
-@@ -93,21 +185,30 @@ disableAttribPointers(AttribDesc *attribDescs, int32 numAttribs)
+@@ -93,21 +191,30 @@ disableAttribPointers(AttribDesc *attribDescs, int32 numAttribs)
  void
  setupVertexInput(InstanceDataHeader *header)
  {
@@ -1721,7 +1736,7 @@ index a02c5c0..fef14e8 100644
  }
  
  int32
-@@ -158,6 +259,45 @@ defaultRenderCB(Atomic *atomic, InstanceDataHeader *header)
+@@ -158,6 +265,46 @@ defaultRenderCB(Atomic *atomic, InstanceDataHeader *header)
  	InstanceData *inst = header->inst;
  	int32 n = header->numMeshes;
  
@@ -1729,6 +1744,7 @@ index a02c5c0..fef14e8 100644
 +	// meshes that follow one another and differ in nothing but their texture, which the
 +	// atlas has too, are one draw. The materials are looked at here, each time: their
 +	// colours may have been changed since the last.
++	perf.pipe = header->atlasInput ? 1 : 0;
 +	if(header->atlasInput){
 +		bool32 lit = (vsBits & VSLIGHT_MASK) != 0 || fewerPrograms == 1;
 +		bool32 strips = header->primType == GL_TRIANGLE_STRIP;
@@ -1767,7 +1783,7 @@ index a02c5c0..fef14e8 100644
  	while(n--){
  		m = inst->material;
  
-@@ -167,7 +307,13 @@ defaultRenderCB(Atomic *atomic, InstanceDataHeader *header)
+@@ -167,7 +314,13 @@ defaultRenderCB(Atomic *atomic, InstanceDataHeader *header)
  
  		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
  
@@ -2054,7 +2070,7 @@ index f361dc8..b1cc29e 100644
  	rwFree(this->uniformLocations);
  	rwFree(this->serialNums);
 diff --git a/src/gl/gl3skin.cpp b/src/gl/gl3skin.cpp
-index 6b69bbd..8910a39 100644
+index 6b69bbd..c5598f6 100644
 --- a/src/gl/gl3skin.cpp
 +++ b/src/gl/gl3skin.cpp
 @@ -27,6 +27,7 @@ namespace gl3 {
@@ -2100,7 +2116,7 @@ index 6b69bbd..8910a39 100644
  
  void
  uploadSkinMatrices(Atomic *a)
-@@ -245,7 +236,28 @@ uploadSkinMatrices(Atomic *a)
+@@ -245,12 +236,34 @@ uploadSkinMatrices(Atomic *a)
  			m++;
  		}
  	}
@@ -2130,7 +2146,13 @@ index 6b69bbd..8910a39 100644
  }
  
  void
-@@ -273,7 +285,9 @@ skinRenderCB(Atomic *atomic, InstanceDataHeader *header)
+ skinRenderCB(Atomic *atomic, InstanceDataHeader *header)
+ {
++	perf.pipe = 3;
+ 	Material *m;
+ 
+ 	uint32 flags = atomic->geometry->flags;
+@@ -273,7 +286,9 @@ skinRenderCB(Atomic *atomic, InstanceDataHeader *header)
  
  		rw::SetRenderState(VERTEXALPHA, inst->vertexAlpha || m->color.alpha != 0xFF);
  
@@ -2141,7 +2163,7 @@ index 6b69bbd..8910a39 100644
  			if(getAlphaTest())
  				skinShader->use();
  			else
-@@ -338,6 +352,7 @@ void
+@@ -338,6 +353,7 @@ void
  initSkin(void)
  {
  	u_boneMatrices = registerUniform("u_boneMatrices", UNIFORM_MAT4, 64);
@@ -2150,10 +2172,21 @@ index 6b69bbd..8910a39 100644
  	Driver::registerPlugin(PLATFORM_GL3, 0, ID_SKIN,
  	                       skinOpen, skinClose);
 diff --git a/src/gl/rwgl3.h b/src/gl/rwgl3.h
-index 3275679..14c6670 100644
+index 3275679..85c677f 100644
 --- a/src/gl/rwgl3.h
 +++ b/src/gl/rwgl3.h
-@@ -61,6 +61,9 @@ enum AttribIndices
+@@ -1,5 +1,10 @@
+ #ifdef RW_GL3
++#ifdef RW_D3D11
++// this renderer's interface on Direct3D 11 (the Windows 10 Mobile port, w10m/rwd3d11): no OpenGL
++#include "rwd3d11gl.h"
++#else
+ #include "glad/glad.h"
++#endif
+ #ifdef LIBRW_SDL2
+ #include <SDL.h>
+ #else
+@@ -61,6 +66,9 @@ enum AttribIndices
  extern int32 u_matColor;
  extern int32 u_surfProps;
  
@@ -2163,7 +2196,7 @@ index 3275679..14c6670 100644
  struct InstanceData
  {
  	uint32    numIndex;
-@@ -70,6 +73,10 @@ struct InstanceData
+@@ -70,6 +78,10 @@ struct InstanceData
  	bool32    vertexAlpha;
  	uint32    program;
  	uint32    offset;
@@ -2174,14 +2207,20 @@ index 3275679..14c6670 100644
  };
  
  struct InstanceDataHeader : rw::InstanceDataHeader
-@@ -86,11 +93,22 @@ struct InstanceDataHeader : rw::InstanceDataHeader
+@@ -86,11 +98,29 @@ struct InstanceDataHeader : rw::InstanceDataHeader
  
  	uint32      ibo;
  	uint32      vbo;		// or 2?
 -#ifdef RW_GL_USE_VAOS
 -	uint32      vao;
--#endif
 +	uint32      vao;		// 0 where there are no vertex array objects
++#ifdef RW_D3D11
++	// Direct3D 11: the buffers themselves (ID3D11Buffer; ibo and vbo are then only "there
++	// are buffers") and what stands for the vertices' layout among the input layouts
++	void       *d3dVertices;
++	void       *d3dIndices;
++	uint32      d3dFormat;
+ #endif
  
  	InstanceData *inst;
 +
@@ -2200,7 +2239,7 @@ index 3275679..14c6670 100644
  };
  
  #ifdef RW_GL3
-@@ -99,6 +117,7 @@ struct Shader;
+@@ -99,6 +129,7 @@ struct Shader;
  
  extern Shader *defaultShader, *defaultShader_noAT;
  extern Shader *defaultShader_fullLight, *defaultShader_fullLight_noAT;
@@ -2208,7 +2247,19 @@ index 3275679..14c6670 100644
  
  struct Im3DVertex
  {
-@@ -163,6 +182,71 @@ void disableAttribPointers(AttribDesc *attribDescs, int32 numAttribs);
+@@ -158,11 +189,90 @@ struct Im2DVertex
+ 	float getV(void) { return this->v; }
+ };
+ 
++#ifdef RW_D3D11
++// Direct3D 11: vertices of the application's own format, drawn as immediate mode draws its
++// own, with the shader that is in use (the OpenGL renderer's callers have buffers of their own
++// for this)
++void im2DRenderIndexedCustom(PrimitiveType primType, void *vertices, int32 numVertices, uint32 stride,
++	AttribDesc *attribs, int32 numAttribs, void *indices, int32 numIndices);
++#endif
+ void setAttribPointers(AttribDesc *attribDescs, int32 numAttribs);
+ void disableAttribPointers(AttribDesc *attribDescs, int32 numAttribs);
  void setupVertexInput(InstanceDataHeader *header);
  void teardownVertexInput(InstanceDataHeader *header);
  
@@ -2266,6 +2317,13 @@ index 3275679..14c6670 100644
 +	uint64 drawNsAfter[8];
 +	// meshes that went into the draw of the mesh before them (atlases)
 +	uint32 merged;
++	// the draw calls by the pipeline that made them (0 default, 1 default from atlases,
++	// 2 material effects, 3 skin), and of those the ones that took over a millisecond
++	uint32 pipe, pipeDraws[4], pipeLong[4];
++	uint64 pipeNs[4], pipeLongNs[4];
++	// immediate draws that took over a millisecond
++	uint32 immediateLong;
++	uint64 immediateLongNs;
 +};
 +extern Perf perf;
 +uint64 perfNow(void);
@@ -2280,7 +2338,7 @@ index 3275679..14c6670 100644
  // Render state
  
  // Vertex shader bits
-@@ -268,6 +352,12 @@ struct Gl3Raster
+@@ -268,6 +378,22 @@ struct Gl3Raster
  	uint32 fbo;		// used for camera texture only!
  	Raster *fboMate;	// color or zbuffer raster mate of this one
  	RasterLevels *backingStore;	// if we can't read back GPU memory but have to
@@ -2290,10 +2348,20 @@ index 3275679..14c6670 100644
 +	Texture *atlas;
 +	float atlasRect[4];
 +	uint8 *atlasPixels;
++#ifdef RW_D3D11
++	// Direct3D 11: the texture (ID3D11Texture2D), and it as what is sampled, drawn into or
++	// the depth buffer (its views); texid and fbo are then only "there is one"
++	void *d3dTexture;
++	void *d3dResource;
++	void *d3dTarget;
++	void *d3dDepth;
++	// its rows are not a power of two wide, or it is drawn into: sampled without wrapping
++	bool d3dClamp;
++#endif
  };
  
  struct Gl3Caps
-@@ -277,12 +367,31 @@ struct Gl3Caps
+@@ -277,12 +403,31 @@ struct Gl3Caps
  	bool dxtSupported;
  	bool astcSupported;	// not used yet
  	float maxAnisotropy;
@@ -2337,6 +2405,73 @@ index 5374b3e..5733ac1 100644
  
  
  }
+diff --git a/src/gl/rwgl3shader.h b/src/gl/rwgl3shader.h
+index 890f12b..581a713 100644
+--- a/src/gl/rwgl3shader.h
++++ b/src/gl/rwgl3shader.h
+@@ -46,6 +46,54 @@ void flushUniforms(void);
+ 
+ extern UniformRegistry uniformRegistry;
+ 
++#ifdef RW_D3D11
++// Direct3D 11 (w10m/rwd3d11): a vertex and a pixel shader compiled when the package was built.
++// What tools/make_shaders.py says of each: its uniforms' places in its constant buffers,
++// the vertex attributes it reads, the samplers, and which GLSL sources it stands for.
++struct ShaderVar
++{
++	const char *name;
++	uint32 offset;
++	uint32 size;
++};
++struct ShaderBuffer
++{
++	const char *name;
++	uint32 slot;
++	uint32 size;
++	int32 numVars;
++	const ShaderVar *vars;
++};
++struct ShaderCode
++{
++	const char *name;
++	int32 vertex;
++	const uint8 *code;
++	uint32 size;
++	int32 numBuffers;
++	const ShaderBuffer *buffers;
++	uint32 attribs;
++	uint32 samplers;
++	int32 numHashes;
++	const uint32 *hashes;
++};
++struct ShaderStage;
++
++struct Shader
++{
++	// for each registered uniform its own number where either shader has it, -1 where not:
++	// what glUniform3fv and glUniform4fv (rwd3d11gl.h) are handed
++	int32 *uniformLocations;
++	ShaderStage *vertex, *pixel;
++
++	// by the GLSL sources of the OpenGL renderer, as its callers have them
++	static Shader *create(const char **vsrc, const char **fsrc);
++	// by the names tools/make_shaders.py gives them
++	static Shader *create(const char *vertexName, const char *pixelName);
++	void use(void);
++	void destroy(void);
++};
++#else
+ struct Shader
+ {
+ 	GLuint program;
+@@ -60,6 +108,7 @@ struct Shader
+ 	void use(void);
+ 	void destroy(void);
+ };
++#endif
+ 
+ extern Shader *currentShader;
+ 
 diff --git a/src/gl/shaders/default.vert b/src/gl/shaders/default.vert
 index 8e3fad7..044cabc 100644
 --- a/src/gl/shaders/default.vert
@@ -2447,3 +2582,35 @@ index 7d1268e..1205a40 100644
  "	}\n"
  
  "	vec4 Vertex = u_world * vec4(SkinVertex, 1.0);\n"
+diff --git a/src/gl/wdgl.cpp b/src/gl/wdgl.cpp
+index d1ac4b8..cc0e7dc 100644
+--- a/src/gl/wdgl.cpp
++++ b/src/gl/wdgl.cpp
+@@ -13,7 +13,8 @@
+ #include "../rwplugins.h"
+ #include "rwwdgl.h"
+ 
+-#ifdef RW_OPENGL
++// (the Direct3D 11 renderer of the Windows 10 Mobile port has no OpenGL to call: RW_D3D11)
++#if defined(RW_OPENGL) && !defined(RW_D3D11)
+ #include "glad/glad.h"
+ #endif
+ 
+@@ -77,7 +78,7 @@ printAttribInfo(AttribDesc *attribs, int n)
+ }
+ */
+ 
+-#ifdef RW_OPENGL
++#if defined(RW_OPENGL) && !defined(RW_D3D11)
+ void
+ uploadGeo(Geometry *geo)
+ {
+@@ -766,7 +767,7 @@ makeMatFXPipeline(void)
+ 
+ int32 nativeRasterOffset;
+ 
+-#ifdef RW_OPENGL
++#if defined(RW_OPENGL) && !defined(RW_D3D11)
+ struct GlRaster {
+ 	GLuint id;
+ };

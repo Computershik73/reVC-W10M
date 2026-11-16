@@ -44,6 +44,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <cwctype>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -55,20 +57,44 @@
 
 namespace revc {
 
-// The phone's language decides between the two the shell speaks.
+// The first of the phone's languages (Settings > Time & language > Language), as "ru-RU"
+inline std::wstring PhoneLanguage() {
+    try {
+        auto languages = winrt::Windows::System::UserProfile::GlobalizationPreferences::Languages();
+        if (languages.Size() > 0) return std::wstring(languages.GetAt(0));
+    } catch (...) {
+    }
+    return {};
+}
+
+// The phone's language decides between the two the shell speaks: Russian on a phone set to
+// Russian, English on every other. REVC_LANG=en (or ru), a setting for a test run (App.cpp),
+// shows the one the phone is not set to.
 inline bool Russian() {
     static const bool ru = [] {
-        try {
-            auto languages = winrt::Windows::System::UserProfile::GlobalizationPreferences::Languages();
-            return languages.Size() > 0 && std::wstring(languages.GetAt(0)).rfind(L"ru", 0) == 0;
-        } catch (...) {
-            return false;
-        }
+        const wchar_t* forced = _wgetenv(L"REVC_LANG");
+        std::wstring tag = forced ? std::wstring(forced) : PhoneLanguage();
+        // "ru", "ru-RU", "ru-BY": not another language whose tag begins with the same two letters
+        return tag.size() >= 2 && towlower(tag[0]) == L'r' && towlower(tag[1]) == L'u' &&
+               (tag.size() == 2 || tag[2] == L'-' || tag[2] == L'_');
     }();
     return ru;
 }
 
 inline const wchar_t* T(const wchar_t* en, const wchar_t* ru) { return Russian() ? ru : en; }
+
+// A message with one button. The button is the shell's own and not the one a dialog gets by
+// itself, so that it is in the language of the text over it whatever the system would put there.
+inline winrt::Windows::UI::Popups::MessageDialog Dialog(winrt::hstring const& text, winrt::hstring const& title = {}) {
+    winrt::Windows::UI::Popups::MessageDialog dialog(text, title);
+    try {
+        dialog.Commands().Append(winrt::Windows::UI::Popups::UICommand(T(L"Close", L"Закрыть")));
+        dialog.DefaultCommandIndex(0);
+        dialog.CancelCommandIndex(0);  // the Back key
+    } catch (...) {
+    }
+    return dialog;
+}
 
 inline std::string Utf8(std::wstring const& w) {
     if (w.empty()) return {};

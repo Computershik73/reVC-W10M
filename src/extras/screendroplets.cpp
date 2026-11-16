@@ -733,6 +733,33 @@ static int primTypeMap[] = {
 
 static int32 u_xform;
 
+#ifdef RW_D3D11
+// Direct3D 11 (the Windows 10 Mobile port): the renderer's immediate mode draws them, from
+// its own buffers
+void
+openim2d_uv2(void)
+{
+}
+
+void
+closeim2d_uv2(void)
+{
+}
+
+void
+RenderIndexedPrimitive_UV2(RwPrimitiveType primType, Im2DVertexUV2 *vertices, RwInt32 numVertices, RwImVertexIndex *indices, RwInt32 numIndices)
+{
+	using namespace rw;
+	using namespace gl3;
+
+	if(im2dOverrideShader)
+		im2dOverrideShader->use();
+	else
+		assert(0);
+	im2DRenderIndexedCustom((PrimitiveType)primType, vertices, numVertices, sizeof(Im2DVertexUV2),
+		im2d_UV2_attribDesc, 4, indices, numIndices);
+}
+#else
 uint32 im2D_UV2_Vbo, im2D_UV2_Ibo;
 #ifdef RW_GL_USE_VAOS
 uint32 im2D_UV2_Vao;
@@ -814,6 +841,7 @@ RenderIndexedPrimitive_UV2(RwPrimitiveType primType, Im2DVertexUV2 *vertices, Rw
 	disableAttribPointers(im2d_UV2_attribDesc, 4);
 #endif
 }
+#endif
 #endif
 
 #endif

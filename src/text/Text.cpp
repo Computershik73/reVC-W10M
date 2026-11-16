@@ -174,6 +174,19 @@ CText::Get(const char *key)
 		outstr = mission_keyArray.Search(key, &result);
 #endif
 #ifdef GTA_W10M
+	// The port's own entry in Options (re3.cpp), which no file of the game has
+	if (!result && strcmp(key, "FEO_ABT") == 0) {
+		static wchar english[] = { 'A', 'b', 'o', 'u', 't', ' ', 't', 'h', 'e', ' ', 'P', 'o', 'r', 't', 0 };
+#ifdef MORE_LANGUAGES
+		// "О порте" in the letters of russian.gxt and FONTS_R.TXD: Cyrillic there is the Latin
+		// letter of the same shape where there is one (О, о, р, е), y for т, and the rest
+		// from 128 up (п is 162)
+		static wchar russian[] = { 79, 32, 162, 111, 112, 121, 101, 0 };
+		if (FrontEndMenuManager.m_PrefsLanguage == CMenuManager::LANGUAGE_RUSSIAN)
+			return russian;
+#endif
+		return english;
+	}
 	if (!result && fallback_keyArray.numEntries > 0) {
 		uint8 found = false;
 		wchar *american = fallback_keyArray.Search(key, fallback_data.chars, &found);

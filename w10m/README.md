@@ -15,6 +15,12 @@ copies it into itself; installing and playing, for players: [`app/INSTALL.txt`](
 frames a second). `tools/build.py` produces the
 signed `builds/reVC_<version>_ARM.appx`.
 
+**The package now draws with Direct3D 11 itself. That has run on an HP Elite x3 (29 to 30
+frames a second of the game's 30, at 1280x720) and not yet on the Lumia 650**
+(*The Direct3D 11 renderer* below). Everything else measured in this section is of the renderer
+before it: librw's OpenGL ES renderer through ANGLE, which `tools/build.py --renderer angle`
+still builds.
+
 | | HP Elite x3 | Lumia 650 |
 |---|---|---|
 | Windows 10 Mobile | 15254.603 | 15063.297 |
@@ -210,6 +216,27 @@ every atomic, fifteen changes of program a frame at a third of a millisecond eac
 world, vehicles, people and the immediate draws take turns), the immediate draws at some
 200 microseconds each, and while driving what comes in from the disc.
 
+What a slow stretch of the drive is made of was looked for next, and it is not the disc
+(`REVC_PERF=1` has the lines). Of the drawing thread's 47 ms a frame while driving, 216
+draws from buffers are 24.5, 68 draws from memory 12.6, the textures handed over 1.2, the
+buffers filled 2.0 and the swap 2.3: a junction is slow because there is more of it to
+draw. Which part of the game draws them, geometry and immediate: the roads 12 to 14, the
+world 55 to 113, the sorted list of what has alpha, which is where vehicles and people are
+drawn too, 84 to 120; the sky 7 immediate, the effects 26 to 48 (coronas 11 to 19, rubbish
+and skid marks 4 to 19, particles 1 to 12, shadows 5 to 6), the HUD 14 to 18, of which the
+radar 10 to 13. By pipeline, with the calls on the game's own thread: the world from
+atlases 92 to 166 draws at 80 to 95 microseconds, vehicles 45 to 110 at 85 to 90 (a car in
+full detail is some forty draws), skinned people 3 to 4 at 300 to 400.
+
+Tried on the two threads, since the same calls are a quarter slower on the drawing thread:
+looking at the queue for a while before sleeping (nothing: the thread runs out of calls
+less than once a frame); keeping each thread on a core of its own (`SetThreadAffinityMask`,
+which kernel32 has on the phone; the scheduler does move the drawing thread between three of
+the four cores, and holding it still made no difference); the drawing thread's priority
+above normal (kept: no more frames, fewer of over 50 ms). The calls of one OpenGL context
+cannot be shared out between more threads than the one; the game's own thread already
+waits half of every frame.
+
 What has been checked, and on what:
 
 | | Checked | Not checked |
@@ -224,13 +251,102 @@ Two things the first runs taught, both below: the app's first crash was not wher
 showed it (*When the app just ends*), and Windows 10 Mobile 15063 does not copy a large file
 for an app that asks it to (*Taking the game in*).
 
+## The Direct3D 11 renderer
+
+[`rwd3d11/`](rwd3d11) is a renderer for librw that calls Direct3D 11 where librw's own calls
+OpenGL ES. With it there is no OpenGL ES, no ANGLE and no translation of calls between the
+game and Direct3D, and no ANGLE in the package. It is what `tools/build.py` builds now.
+
+**It has run on one phone, an HP Elite x3, and not on the Lumia 650**, the slow one it was
+written for. On the build PC `tools/test_game.py --renderer d3d11` runs the game on a Direct3D
+device held to feature level 9_3 (a desktop GPU keeping that level's rules: not a phone's
+driver).
+
+On the Elite x3 (Windows 10 Mobile 15254.603, package 1.0.1116.1550, 1280x720), at the level
+the renderer asks for there, 11_0, and held to 9_3 (`REVC_ANGLE_FL=9_3`), by the log and by
+the frames the game saved every second:
+
+- The picture is right in the menus, a new game, the opening cutscene, on foot and driving.
+  (The frames are what the renderer drew, read back from Direct3D; somebody played on the
+  phone with the on-screen pad during these runs, so it was on the screen too.)
+- **29.4 to 29.8 frames a second of the game's 30**, on foot and driving, at both levels.
+  The same phone with package 1.0.1116.750 the day before (OpenGL ES 3.0 through ANGLE, no
+  drawing thread, no atlases, no shared buffers: those are only for OpenGL ES 2.0 there): 23
+  to 28, with 13 to 33 ms of a frame in `RenderScene`, which is 4 ms now.
+- A frame's drawing, about 310 draws while driving (`REVC_PERF=1`): state and uniforms 1.2 ms,
+  the draw calls of geometry 1.6 ms, 56 immediate draws 0.8 ms. A draw call takes 4
+  microseconds where nothing was changed before it, 6 after another texture, 10 to 17 after
+  another program.
+- `REVC_BENCH=1` there, level 11_0 and 9_3 alike: a draw with nothing changed 1 microsecond,
+  a vec4 or a mat4 changed 3 to 4, another texture 3 to 5, other shaders 9 to 10. New vertices
+  into a buffer that is discarded for each draw: 134; written further along the buffer: 2,
+  which is what immediate mode does. A deferred context exists (the driver has no command
+  lists of its own, so Direct3D keeps them): at level 11_0 recording a draw costs 7 to 25
+  microseconds and making the recorded calls 9 to 12, more than calling directly; at 9_3
+  recording costs 1 and making the calls 1 to 5.
+
+Why: on the slow phone a frame is its calls, and each of them went through ANGLE, which checks
+and translates it, before it reached the phone's driver. How much of a call's cost is ANGLE's
+and how much the driver's is what `REVC_BENCH=1` now measures on the phone at hand: the same
+small quad as before, drawn through Direct3D 11 directly as well
+([`bench/d3dbench.cpp`](bench/d3dbench.cpp)), one thing changed between the draws at a time. On
+the build PC, where only the proportion says anything: uniforms changed before a draw cost 4
+to 16 microseconds through ANGLE and 3 to 4 directly, other vertex buffers 10 and 0.5, another
+program 3.7 and 2.
+
+How it is made:
+
+- **Its interface is that of librw's OpenGL renderer** (`rw::gl3`, `RW_GL3`), because the
+  game's own pipelines and effects are written against that (`src/extras/custompipes_gl.cpp`,
+  `postfx.cpp`, `screendroplets.cpp`) and are compiled as they are; `RW_D3D11` says what is
+  behind it. [`rwd3d11/rwd3d11gl.h`](rwd3d11/rwd3d11gl.h) has the few OpenGL names that code
+  uses as plain values, and `glUniform3fv` and `glUniform4fv` for the uniforms it sets itself.
+  Of librw's `gl/` only what calls no OpenGL is built (the material effects' pipeline is one).
+- **The shaders are HLSL, compiled when the package is built** (`rwd3d11/shaders`,
+  [`tools/make_shaders.py`](tools/make_shaders.py), the Windows SDK's `fxc`; for feature level
+  9_3, which every level above takes too). Nothing is compiled on the phone, where ANGLE took
+  over a minute at the first start. Callers still ask for a program by its GLSL sources: the
+  tool's list says which HLSL stands for which, and the renderer finds it by a hash of what it
+  is handed. A shader's uniforms lie in constant buffers grouped by how often they change; the
+  tool reads their places out of the compiler's listing, and a buffer is handed over again
+  only when one of its uniforms changed. A vertex shader and a pixel shader are each one object
+  however many programs are made of them. The lights are a real loop (`[loop]`): unrolled,
+  eight lights of three kinds are more than the 256 instructions a vertex shader has at this
+  level.
+- **Textures are kept as the OpenGL renderer keeps them**, rows bottom-up and sampled at
+  (u, 1-v), the PC game's DXT blocks as they are. A texture that is drawn into is drawn into
+  upside down, and the picture is turned over when it is copied into one (the colour filters,
+  the drops on the screen), so that there is one rule for all of them.
+- **What was done for the slow phone is kept**: the atlases, geometries sharing buffers (a
+  geometry's part of a page is written by itself), one program for a pipeline. Vertex array
+  objects and kept program binaries have nothing to stand for. Immediate mode writes its
+  vertices along one buffer, each draw after the last, and a draw is its part of it.
+- **Every vertex has a colour and texture coordinates**, black and nought where its geometry
+  has none: Direct3D has no value for an input the vertices lack. What has no normals is drawn
+  by the shaders that read none.
+- **There is no drawing thread yet**: Direct3D is called where the game asks, on the game's
+  thread. (`glthread/` carries OpenGL's calls, and is the other build's.) The Elite x3 needs
+  none: its drawing is under 4 ms of a frame. The benchmark also says whether a phone's
+  Direct3D can record a frame's calls on one thread and make them on another, and at what
+  cost; whether the Lumia 650 needs that is for its own numbers to say.
+- The window and the input are still GLFW's API (`glfw/`, built without EGL: `REVC_D3D11`).
+  The renderer makes a swap chain of the render target's size and the shell puts it into its
+  panel, stretched over it (`host_set_swap_chain`).
+
+Checked on the build PC, at feature level 9_3 and at the PC's own, against the OpenGL
+renderer's frames of the same scripted runs (`REVC_KEYS`, `REVC_FRAMESHOT`): the menus, a new
+game, the opening cutscene, on foot, the self-driving run of 110 seconds, the game's plain and
+its full colour filter, both vehicle pipelines. The pictures are the same. Not checked
+anywhere: rain on the screen, a panel that changes size, a device that is lost, a phone whose
+own level is 9_3 (the Lumia 650).
+
 ## How it fits together
 
 | Layer | Desktop reVC | Here |
 |---|---|---|
 | The game | `src/` | the same sources, built with MSVC for ARM32; `GTA_W10M` marks the few places that differ |
-| RenderWare | librw (`vendor/librw`), OpenGL 3 or ES | librw's OpenGL ES path on **ANGLE** (Direct3D 11, feature level 9_1 and up), presenting into a XAML `SwapChainPanel` |
-| Window, input | GLFW (`src/skel/glfw/glfw.cpp`) | the same skeleton; GLFW's API is implemented in [`glfw/`](glfw) over EGL and the shell |
+| RenderWare | librw (`vendor/librw`), OpenGL 3 or ES | librw with a renderer of its own on **Direct3D 11** ([`rwd3d11/`](rwd3d11), feature level 9_3 and up), presenting into a XAML `SwapChainPanel`. Or, as it was: librw's OpenGL ES renderer on **ANGLE** |
+| Window, input | GLFW (`src/skel/glfw/glfw.cpp`) | the same skeleton; GLFW's API is implemented in [`glfw/`](glfw) over the shell (and over EGL, where ANGLE draws) |
 | Sound | OpenAL Soft | OpenAL Soft 1.24.3 with an XAudio2 backend ([`openal/`](openal)): its own UWP backend is WASAPI, which faults on 15063 phones when it is opened off the UI thread (butterscotch-w10m) |
 | MP3 (radio, cutscenes) | mpg123 | mpg123 1.32.10, its C decoder ([`deps/mpg123`](deps/mpg123)) |
 | Controls | keyboard, mouse, gamepad | an on-screen pad in XAML ([`app/TouchPad.h`](app/TouchPad.h)) that the game sees as a gamepad; a real gamepad (Windows.Gaming.Input) takes over; a keyboard works. The game's gamepad menu is on (`GAMEPAD_MENU`): its controller type decides the pictures in the game's prompts, and the pad wears the same names (PlayStation's by default, Xbox's, the Switch's) |
@@ -240,6 +356,18 @@ The shell ([`app/App.cpp`](app/App.cpp), C++/WinRT, no XAML markup) owns the win
 thread. The game runs on a thread of its own (`reVC_Main`) and meets the shell only through
 [`app/host_api.h`](app/host_api.h): the panel, an event queue, the pad's state, what the player
 is doing (a menu, on foot, in a vehicle, a cutscene: the pad shows the controls that fit), a log.
+
+The shell speaks two languages, each line written twice where it is used (`T(english, russian)`,
+[`app/pch.h`](app/pch.h)): Russian on a phone whose first language is Russian (Settings > Time &
+language > Language), English on every other. Its dialogs' one button is its own for the same
+reason. The log's first lines say which it is; `REVC_LANG` shows the other one. The game's
+language is the game's own setting.
+
+Who made the port and how to reach them is at the foot of the files screen, and in the game
+under Options, "About the Port" (`FEO_ABT`, an entry `src/core/re3.cpp` adds; its text is in
+`CText::Get`, no file of the game has it): the game asks the shell (`host_show_about`), which
+shows the same lines over the game's picture until Close, the Back key, a key or a button of
+the pad.
 
 What a phone decides, and what is done about it:
 
@@ -267,20 +395,26 @@ What a phone decides, and what is done about it:
 ```
 app/                  the shell: App.cpp, TouchPad.h, GameFiles.h, Gamepad.h, host_api.h,
                       the manifest, the tiles, INSTALL.txt, THIRD-PARTY.txt
-glfw/                 GLFW's API (the part librw and the game use) over ANGLE and the shell
-glthread/             OpenGL ES on a thread of its own: glthread.cpp, and calls.inc, which
-                      tools/gen_glthread.py makes from librw's glad.h
+rwd3d11/              the Direct3D 11 renderer for librw, and shaders/, its HLSL
+bench/                what a draw costs on the device at hand, through Direct3D 11 itself
+                      and through ANGLE (REVC_BENCH)
+glfw/                 GLFW's API (the part librw and the game use) over the shell, and over
+                      ANGLE where that draws
+glthread/             the OpenGL ES build's: OpenGL ES on a thread of its own, glthread.cpp,
+                      and calls.inc, which tools/gen_glthread.py makes from librw's glad.h
 openal/               the XAudio2 backend for OpenAL Soft
 deps/mpg123/          how libmpg123 is built here (its sources are fetched)
-patches/              librw (OpenGL ES 3.0, ANGLE's DXT names, bone rows, vertex array objects,
-                      kept programs, one program for a pipeline, immediate mode from memory,
-                      shared buffers) and OpenAL Soft
-                      (registering the backend), applied by tools/build.py
-cmake/                the toolchain file: MSVC for ARM, the app container's link line
+patches/              librw (its OpenGL renderer's interface for rwd3d11/; and for the OpenGL
+                      ES build: OpenGL ES 3.0, ANGLE's DXT names, bone rows, vertex array
+                      objects, kept programs, one program for a pipeline, immediate mode from
+                      memory, shared buffers, atlases) and OpenAL Soft (registering the
+                      backend), applied by tools/build.py
+cmake/                the toolchain file: MSVC for ARM, the app container's link line; and
+                      rwd3d11.cmake, librw with the Direct3D 11 renderer
 CMakeLists.txt        everything that is built
 test/                 what runs on the build PC: openal/, render/, game/
-tools/                build.py, test_*.py, phone.py, symbolize.py, gen_glthread.py, make_assets.py,
-                      env.py (where things are)
+tools/                build.py, test_*.py, phone.py, symbolize.py, make_shaders.py,
+                      gen_glthread.py, make_assets.py, env.py (where things are)
 work/, builds/        made by the tools, not in the repository
 ../src/skel/w10m/     the game's side of host_api.h
 ```
@@ -324,6 +458,9 @@ That fetches OpenAL Soft (a pinned commit) and mpg123 (a pinned SHA-256), applie
 imports, packs and signs `w10m/builds/reVC_<version>_ARM.appx`, with `Computershik.cer` and
 `INSTALL.txt` beside it and the linker maps in `builds/maps`. `--list` names the steps;
 `build.py build pack` runs only those, `--from build` that one and the rest.
+`build.py --renderer angle configure build stage shims imports pack` makes the package that
+draws with OpenGL ES through ANGLE instead (`--renderer d3d11` goes back); the choice stays
+with the build folder.
 
 The tests, on the build PC:
 
@@ -336,7 +473,7 @@ python w10m/tools/test_render.py
 ```
 
 ```bash
-python w10m/tools/test_game.py --game "D:\Games\GTA Vice City" --frames 2000 --key 1500:123
+python w10m/tools/test_game.py --renderer d3d11 --game "D:\Games\GTA Vice City" --seconds 60 --level 9_3
 ```
 
 `test_render.py` runs at each Direct3D level twice: the second time every shader program must
@@ -344,8 +481,12 @@ come from the folder the first run kept them in, and draw the same. It also draw
 and an immediate triangle in turn, from recorded vertex input.
 
 The last one runs the game itself (x64, off-screen, with sound) in a copy of the game that has
-reVC's `gamefiles` over it; key 123 is F12, with which the game saves a screenshot. Without
-`--game` it only shows that the engine starts.
+reVC's `gamefiles` over it, with the Direct3D 11 renderer or, without `--renderer`, with
+OpenGL ES through ANGLE; `--level` holds Direct3D to a feature level. It ends after
+`--seconds`. With `REVC_TEST_LOCAL` set to a folder, what a phone does by itself works here
+too: `REVC_KEYS` walks the menus and drives, `REVC_FRAMESHOT=2k` leaves a frame every two
+seconds in that folder, and two runs' frames can be laid side by side. Without `--game` it
+only shows that the engine starts. `test_render.py` is of the OpenGL ES renderer.
 
 ## On the phone
 
@@ -456,13 +597,18 @@ takes it away again, which is not to be forgotten: they stay until removed.
 | `REVC_FRAMESHOT=5` | the game's picture, every five seconds, as `LocalState\frame.bmp` (640 wide at most): `phone.py file frame.bmp`, which makes a PNG of it too. `REVC_FRAMESHOT=1k` keeps every one, a second apart, as `frame_001.bmp` and so on (320 wide), each logged with the time on the clock of `REVC_KEYS`; `phone.py frames` fetches them, takes them off the phone and puts them on one sheet, `frames.png` (with PIL), which is how a scripted drive is seen and corrected |
 | `REVC_KEYS=13@3,13@6,s@8` | keys pressed by the clock, which starts when the game's menu first comes up: virtual key 13 (Enter) after 3 seconds and again after 6 (a new game), and from 8 on every cutscene is skipped as it starts. `87@45-75` holds a key from 45 to 75: W, the accelerator of the game's PC keys (65 and 68, A and D, steer; 83, S, brakes), so that a run drives itself. With the frames, a way into the game from the PC |
 | `REVC_PERF=1` | every ten seconds, the draws of a frame and the time in them (`perf: 290 draws a frame: vertex input 1.1 ms, state and uniforms 2.6 ms, the draw calls 41.1 ms; 55 immediate draws, 13.3 ms`; with a drawing thread that is the time to queue them, and its own is in the line `the drawing thread worked 44.2 ms a frame on 1437 calls`), what changed between them (`12 programs, 342 uniforms, 305 textures (208 different ones), ... 73 vertex arrays, 40 blend`), and without a drawing thread what a draw call took by what was changed before it |
-| `REVC_GL_THREAD=0` (`1`) | OpenGL ES is called on the game's own thread, as on a phone with OpenGL ES 3.0; `1` gives such a phone the drawing thread |
-| `REVC_BENCH=1` | when the menu first comes up: what a draw costs on this phone, and each kind of change between two draws (`bench:` lines; *The slow phone* above has a Lumia 650's) |
+| `REVC_GL_THREAD=0` (`1`) | OpenGL ES is called on the game's own thread, as on a phone with OpenGL ES 3.0; `1` gives such a phone the drawing thread. With `REVC_PERF=1` the log then has the draw calls by pipeline and by what was changed before them; with the drawing thread, that thread's time by kind of call |
+| `REVC_GL_PRIORITY=0` | the drawing thread at the priority of any other thread, not above |
+| `REVC_BENCH=1` | when the menu first comes up: what a draw costs on this phone through Direct3D 11 itself, and each kind of change between two draws (`d3d bench:` lines), which formats its Direct3D has and whether a frame's calls can be recorded on one thread and made on another; in the OpenGL ES build, the same draws through ANGLE first (`bench:` lines; *The slow phone* above has a Lumia 650's) |
+| `REVC_D3D_LEVEL=9_3` | the Direct3D 11 renderer asks for no more than this feature level (`REVC_ANGLE_FL` in the OpenGL ES build) |
 | `REVC_FULL_DETAIL=1`, `REVC_PS2_ALPHA=1` | a phone with OpenGL ES 2.0 keeps vehicles in full detail up to 70 m, or the PlayStation 2's alpha test |
 | `REVC_NO_SHADER_CACHE=1`, `LIBRW_NO_VERTEX_ARRAYS=1`, `LIBRW_NO_VERTICES_FROM_MEMORY=1`, `LIBRW_NO_SHARED_BUFFERS=1`, `LIBRW_NO_ATLASES=1` | without the kept programs, without vertex array objects, with a buffer filled for every immediate draw, with buffers of its own for every geometry, with a draw and a texture of its own for every mesh: to tell what each is worth |
 | `LIBRW_PAGE_VERTICES=16384` | how many vertices a page of shared buffers holds (65536 at most, which is what it is left at) |
 | `LIBRW_HALF_TEXTURES=1` | textures of 64 pixels and more each way are made half as wide and half as high as they are read: a measurement of what their size costs (*The slow phone*), with a blurred picture |
 | `REVC_PROGRAMS=all` (`few`, `noat`) | a phone with OpenGL ES 2.0 picks the cheapest of a pipeline's four programs for each mesh again; `few`: the one with the lights for every mesh (and on a phone with 3.0, the same); `noat`: nothing is discarded by the alpha test, a measurement of what it costs the GPU and not a picture |
+| `REVC_FILES_SCREEN=1` (`end`) | the files screen though the game's files are there, as a phone without them has it; `end`: scrolled to its foot, where the port's author and links are. With the snapshot, a look at it from the PC (the phone's screen has to be on: a snapshot of a locked phone is empty) |
+| `REVC_LANG=en` (`ru`) | the shell speaks English, or Russian, whatever the phone's language: a look at the one the phone at hand is not set to |
+| `REVC_ABOUT_CLOSE=4` | "About the Port" (the game's Options) closes itself after so many seconds: with `REVC_KEYS` walking to it (`40@3,13@4.5,38@6,38@7.5,13@9.5` from the first menu) a run nobody holds the phone for opens it, closes it and goes on in the menu |
 | `REVC_SNAPSHOT=1` | the shell saves its XAML (the files screen, the pad; the game's picture is not XAML and comes out black) as `LocalState\snapshot.png` whenever it changes: `phone.py file snapshot.png` |
 | `REVC_PAD_PREVIEW=menu` (`foot`, `vehicle`, `cutscene`; `vehicle-xbox`...) | the pad as it is in that part of the game, without a game, with Xbox's names for `-xbox`: with the snapshot, a look at its layout from the PC |
 | `ALSOFT_LOGLEVEL=3` | OpenAL Soft says what it does, into the log |

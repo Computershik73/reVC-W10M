@@ -5,6 +5,9 @@
 #include "Clock.h"
 #include "Darkel.h"
 #include "Hud.h"
+#ifdef GTA_W10M
+#include "timebars.h"
+#endif
 #include "Messages.h"
 #include "Frontend.h"
 #include "Font.h"
@@ -1063,6 +1066,9 @@ void CHud::Draw()
 			!m_HideRadar && (m_ItemToFlash == ITEM_RADAR && FRAMECOUNTER & 8 || m_ItemToFlash != ITEM_RADAR)) {
 
 			RwRenderStateSet(rwRENDERSTATETEXTUREFILTER, (void*)rwFILTERNEAREST);
+#ifdef GTA_W10M
+			tbStartTimer(0, "Radar");
+#endif
 			CRadar::DrawMap();
 			if (FrontEndMenuManager.m_PrefsRadarMode != 1) {
 				CRect rect(0.0f, 0.0f, SCREEN_SCALE_X(RADAR_WIDTH), SCREEN_SCALE_Y(RADAR_HEIGHT));
@@ -1085,6 +1091,9 @@ void CHud::Draw()
 				Sprites[HUD_RADARDISC].Draw(rect, RADARDISC_COLOR);
 			}
 			CRadar::DrawBlips();
+#ifdef GTA_W10M
+			tbEndTimer("Radar");
+#endif
 		}
 	}
 

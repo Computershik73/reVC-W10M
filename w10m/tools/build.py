@@ -4,14 +4,19 @@
     python w10m/tools/build.py --list          the steps
     python w10m/tools/build.py build pack      only these
     python w10m/tools/build.py --from build    this one and the ones after it
+    python w10m/tools/build.py --renderer angle configure build stage shims imports pack
+                                               with OpenGL ES through ANGLE instead of the
+                                               Direct3D 11 renderer (rwd3d11/); the choice stays
+                                               with the build folder until it is made again
 
 Steps:
     sources    fetch OpenAL Soft and mpg123 into w10m/work/src (pinned: a commit, a SHA-256)
     patch      apply w10m/patches to OpenAL Soft and to vendor/librw (does nothing when applied)
     configure  CMake with cmake/toolchain-arm-msvc.cmake, Ninja, into w10m/work/build
     build      reVC.exe, OpenAL32.dll, libmpg123.dll
-    stage      the package's files in w10m/work/stage: the binaries, ANGLE, the C runtime,
-               the game files reVC adds to Vice City (gamefiles/), the tiles, the manifest
+    stage      the package's files in w10m/work/stage: the binaries, the C runtime, the game
+               files reVC adds to Vice City (gamefiles/), the tiles, the manifest; ANGLE too
+               where it is what draws
     shims      a forwarder DLL for each api-set name the package imports, for phones whose
                api-set schema does not know the name
     imports    every import of every staged binary: from a DLL in the package, it must be
@@ -44,6 +49,7 @@ PATCHES = [
 ]
 BINARIES = ["reVC.exe", "OpenAL32.dll", "libmpg123.dll"]
 ANGLE = ["libEGL.dll", "libGLESv2.dll"]
+RENDERER = None  # --renderer: d3d11 or angle; None: as the build folder has it (d3d11 at first)
 
 
 def run(cmd, **kw):
@@ -123,10 +129,24 @@ def step_configure():
            "-DOPENAL_SOURCE_DIR=" + env.OPENAL.replace("\\", "/"),
            "-DMPG123_SOURCE_DIR=" + env.MPG123.replace("\\", "/"),
            "-DANGLE_INCLUDE_DIR=" + env.ANGLE_INCLUDE.replace("\\", "/"),
-           "-DANGLE_LIB_DIR=" + env.ANGLE_BIN.replace("\\", "/")]
+           "-DANGLE_LIB_DIR=" + env.ANGLE_BIN.replace("\\", "/"),
+           # the Direct3D 11 renderer's shaders are compiled by tools/make_shaders.py
+           "-DREVC_PYTHON=" + sys.executable.replace("\\", "/")]
+    if RENDERER:
+        cmd.append("-DREVC_RENDERER=" + RENDERER)
     r = subprocess.run(cmd, env=env.build_env())
     if r.returncode != 0:
         sys.exit("failed: cmake")
+
+
+def renderer():
+    """What the build folder was configured to draw with: d3d11 or angle."""
+    try:
+        with open(os.path.join(env.BUILD, "CMakeCache.txt"), encoding="utf-8", errors="replace") as f:
+            found = re.search(r"^REVC_RENDERER:\w+=(\w+)", f.read(), re.M)
+        return found.group(1) if found else "d3d11"
+    except OSError:
+        return "d3d11"
 
 
 def step_build(jobs=None):
@@ -160,8 +180,9 @@ def step_stage():
     os.makedirs(env.STAGE)
     for name in BINARIES:
         shutil.copy2(os.path.join(env.BUILD, "bin", name), os.path.join(env.STAGE, name))
-    for name in ANGLE:
-        shutil.copy2(os.path.join(env.ANGLE_BIN, name), os.path.join(env.STAGE, name))
+    if renderer() == "angle":
+        for name in ANGLE:
+            shutil.copy2(os.path.join(env.ANGLE_BIN, name), os.path.join(env.STAGE, name))
     for name in env.CRT:
         shutil.copy2(os.path.join(env.CRT_DIR, name), os.path.join(env.STAGE, name))
     # What reVC adds to and replaces in the game's own files: the app copies these over the
@@ -183,7 +204,8 @@ def step_stage():
     with open(os.path.join(env.STAGE, "build.txt"), "w", encoding="utf-8") as f:
         f.write(f"reVC for Windows 10 Mobile {v}, commit {commit()}\n")
     count = sum(len(files) for _, _, files in os.walk(env.STAGE))
-    print(f"staged {count} files, version {v}")
+    print(f"staged {count} files, version {v}, drawn by " +
+          ("Direct3D 11 itself" if renderer() == "d3d11" else "OpenGL ES through ANGLE"))
     return v
 
 
@@ -370,7 +392,11 @@ def main():
     ap.add_argument("steps", nargs="*", help="steps to run (default: all)")
     ap.add_argument("--from", dest="start", help="run this step and every one after it")
     ap.add_argument("--list", action="store_true", help="name the steps and stop")
+    ap.add_argument("--renderer", choices=["d3d11", "angle"],
+                    help="what draws the game, for the configure step (default: as the build folder has it)")
     a = ap.parse_args()
+    global RENDERER
+    RENDERER = a.renderer
     names = [name for name, _ in STEPS]
     if a.list:
         print("\n".join(names))

@@ -23,12 +23,19 @@ set(OPENAL_SOURCE_DIR "${W10M_SOURCES_DIR}/openal-soft" CACHE PATH "OpenAL Soft 
 set(MPG123_SOURCE_DIR "${W10M_SOURCES_DIR}/mpg123-1.32.10" CACHE PATH "mpg123 1.32.10 sources")
 set(ANGLE_INCLUDE_DIR "" CACHE PATH "ANGLE's include directory (EGL/egl.h)")
 set(ANGLE_LIB_DIR "" CACHE PATH "Directory with ANGLE's libEGL.lib and libGLESv2.lib for ARM")
+# What draws the game. d3d11: the Direct3D 11 renderer (rwd3d11/), which calls Direct3D itself;
+# the package then has no ANGLE in it. angle: librw's OpenGL renderer on OpenGL ES, which ANGLE
+# turns into Direct3D 11 (libEGL.dll, libGLESv2.dll), with the drawing thread (glthread/).
+set(REVC_RENDERER "d3d11" CACHE STRING "d3d11 or angle")
+set(W10M "${CMAKE_CURRENT_SOURCE_DIR}")
 
+if(NOT REVC_RENDERER STREQUAL "d3d11")
 if(NOT EXISTS "${ANGLE_INCLUDE_DIR}/EGL/egl.h")
     message(FATAL_ERROR "ANGLE_INCLUDE_DIR (${ANGLE_INCLUDE_DIR}) has no EGL/egl.h")
 endif()
 if(NOT EXISTS "${ANGLE_LIB_DIR}/libEGL.lib" OR NOT EXISTS "${ANGLE_LIB_DIR}/libGLESv2.lib")
     message(FATAL_ERROR "ANGLE_LIB_DIR (${ANGLE_LIB_DIR}) has no libEGL.lib and libGLESv2.lib")
+endif()
 endif()
 
 set(CMAKE_CXX_STANDARD 14)
@@ -38,6 +45,15 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
+if(REVC_RENDERER STREQUAL "d3d11")
+# ===[ The Direct3D 11 renderer, GLFW's API without EGL, librw without its OpenGL ]===
+
+include(cmake/rwd3d11.cmake)
+target_compile_options(librw PRIVATE /W2 /wd4996 /wd4244 /wd4267 /wd4305 /wd4838)
+add_library(librw::librw ALIAS librw)
+add_library(angle INTERFACE)  # nothing: the executable below names it
+
+else()
 # ===[ ANGLE ]===
 
 add_library(angle INTERFACE)
@@ -77,6 +93,7 @@ target_compile_options(librw PRIVATE /W2 /wd4996 /wd4244 /wd4267 /wd4305 /wd4838
 target_link_libraries(librw PUBLIC glfw)
 set_target_properties(librw PROPERTIES PREFIX "")
 add_library(librw::librw ALIAS librw)
+endif()
 
 # ===[ mpg123 ]===
 
@@ -146,14 +163,20 @@ foreach(_header IN LISTS _revc_headers)
 endforeach()
 list(REMOVE_DUPLICATES REVC_INCLUDES)
 
-add_library(revc_game STATIC ${REVC_SOURCES} "${CMAKE_CURRENT_BINARY_DIR}/GitSHA1.cpp")
+# bench/: what a draw costs on the phone at hand, through ANGLE and through Direct3D 11 itself
+# (REVC_BENCH=1; the game's skeleton runs them when its menu first comes up)
+add_library(revc_game STATIC ${REVC_SOURCES} "${CMAKE_CURRENT_BINARY_DIR}/GitSHA1.cpp"
+    bench/d3dbench.cpp)
+if(NOT REVC_RENDERER STREQUAL "d3d11")
+    target_sources(revc_game PRIVATE bench/glbench.cpp)
+endif()
 target_include_directories(revc_game PRIVATE "${REVC_ROOT}" ${REVC_INCLUDES} app)
 target_compile_definitions(revc_game PRIVATE
     GTA_W10M LIBRW AUDIO_OAL CMAKE_BUILD CMAKE_NO_AUTOLINK USE_OUR_VERSIONING
     _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
 # /Zc:sizedDealloc- as src/CMakeLists.txt has it for MSVC; the warnings are the game's own style
 target_compile_options(revc_game PRIVATE /Zc:sizedDealloc- /w /bigobj)
-target_link_libraries(revc_game PUBLIC librw OpenAL::OpenAL MPG123::libmpg123)
+target_link_libraries(revc_game PUBLIC librw OpenAL::OpenAL MPG123::libmpg123 d3d11.lib d3dcompiler.lib)
 
 # ===[ The shell and the executable ]===
 
@@ -162,6 +185,9 @@ add_executable(reVC WIN32
     app/pch.h app/host_api.h app/TouchPad.h app/GameFiles.h app/Gamepad.h)
 target_include_directories(reVC PRIVATE app)
 target_compile_definitions(reVC PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+if(REVC_RENDERER STREQUAL "d3d11")
+    target_compile_definitions(reVC PRIVATE REVC_D3D11)
+endif()
 target_compile_options(reVC PRIVATE /GR- /bigobj /permissive-)
 set_target_properties(reVC PROPERTIES CXX_STANDARD 20)
 target_link_libraries(reVC PRIVATE revc_game angle delayimp.lib)

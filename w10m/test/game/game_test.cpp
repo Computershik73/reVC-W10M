@@ -2,10 +2,11 @@
 // directory, draws into a pbuffer (there is no panel) and sees a pad nobody touches. What it
 // prints and logs goes to stdout, a line at a time.
 //
-//   game_test [--frames N] [--press FRAME:BUTTON ...] [--key FRAME:VK ...]
+//   game_test [--frames N] [--seconds S] [--press FRAME:BUTTON ...] [--key FRAME:VK ...]
 //
-// After N polls of the event queue (one a frame; 0: never) the shell "closes the window", and
-// the game is expected to shut down by itself. --press holds a pad button (host_api.h's index)
+// After N polls of the event queue (0: never; the game polls more than once a frame where it
+// waits for its frame's time) or after S seconds the shell "closes the window", and the game
+// is expected to shut down by itself. --press holds a pad button (host_api.h's index)
 // for a few frames from that frame on: enough to walk the game's menus. --key presses a key
 // (a Windows virtual-key code, decimal) the same way: 123 is F12, the game's screenshot key.
 #include <windows.h>
@@ -27,6 +28,7 @@ struct Press {
 };
 
 long gFrames, gQuitAfter = 600;
+double gQuitAfterSeconds;
 int gContext = -1;
 std::vector<Press> gPresses, gKeys;
 LARGE_INTEGER gStart, gFrequency;
@@ -58,7 +60,7 @@ extern "C" bool host_panel_native_size(int32_t* w, int32_t* h) { return host_pan
 // Polled until it is empty, once a frame: the end of each poll is the frame count
 extern "C" bool host_poll_event(HostEvent* event) {
     static bool closing;
-    if (!closing && gQuitAfter > 0 && gFrames >= gQuitAfter) {
+    if (!closing && ((gQuitAfter > 0 && gFrames >= gQuitAfter) || (gQuitAfterSeconds > 0 && Seconds() >= gQuitAfterSeconds))) {
         closing = true;
         Line("test: ", "closing the window");
         event->type = HOST_EV_QUIT;
@@ -106,9 +108,28 @@ extern "C" void host_set_context(int32_t context) {
 
 extern "C" int32_t host_take_requests(void) { return 0; }
 
-extern "C" const wchar_t* host_local_folder(void) { return nullptr; }
+extern "C" void host_show_about(void) {}
+
+// REVC_TEST_LOCAL=folder: what the app's LocalState is on a phone. With it the runs a phone
+// makes by itself can be made here too: REVC_KEYS, and REVC_FRAMESHOT's frames into that folder.
+extern "C" const wchar_t* host_local_folder(void) {
+    static wchar_t folder[MAX_PATH];
+    static bool asked;
+    if (!asked) {
+        asked = true;
+        if (const char* local = getenv("REVC_TEST_LOCAL")) {
+            MultiByteToWideChar(CP_ACP, 0, local, -1, folder, MAX_PATH);
+            CreateDirectoryW(folder, nullptr);
+        }
+    }
+    return folder[0] ? folder : nullptr;
+}
 
 extern "C" void host_set_pad_style(int32_t) {}
+
+// there is no panel (host_panel): the Direct3D renderer draws into a texture, and has no
+// swap chain to hand over
+extern "C" bool host_set_swap_chain(void*, int32_t, int32_t) { return false; }
 
 extern "C" void host_log(const char* text) { Line("", text); }
 
@@ -158,6 +179,8 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) {
             gQuitAfter = atol(argv[++i]);
+        } else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) {
+            gQuitAfterSeconds = atof(argv[++i]);
         } else if (!strcmp(argv[i], "--press") && i + 1 < argc) {
             Press press{};
             if (sscanf(argv[++i], "%ld:%d", &press.frame, &press.button) == 2 && press.button >= 0 && press.button < HOST_PAD_BUTTONS)

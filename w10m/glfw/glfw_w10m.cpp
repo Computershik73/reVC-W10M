@@ -1,5 +1,10 @@
 // GLFW's API (the part in include/GLFW/glfw3.h) for Windows 10 Mobile.
 //
+// Built in one of two ways. With REVC_D3D11 the picture is the Direct3D 11 renderer's
+// (w10m/rwd3d11): there is no OpenGL ES, no EGL and no context here, the window is the panel's
+// size and its input, and a frame's end is that renderer's (rwd3d11_host.h). Without it, as
+// follows.
+//
 // The window is the shell's XAML SwapChainPanel: ANGLE presents OpenGL ES into it through EGL.
 // Events come from the shell's queue (host_api.h), which the UI thread fills; everything here
 // runs on the game thread, as GLFW's callbacks do on a desktop. Joystick 0 is the pad the shell
@@ -11,8 +16,10 @@
 // On an OpenGL ES 2.0 context the first frame is the last one the game thread draws itself:
 // from the second on OpenGL is called by a drawing thread (w10m/glthread), which has the
 // context, and what this file does with EGL goes there too.
+#ifndef REVC_D3D11
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#endif
 
 #include <windows.h>
 #include <dxgi.h>
@@ -32,9 +39,13 @@
 #include "glthread.h"
 #include "host_api.h"
 
+#ifdef REVC_D3D11
+#include "rwd3d11_host.h"
+#else
 // ANGLE (the gecko-w10m sources butterscotch-w10m builds): the render thread cannot ask XAML
 // for the panel's size, so the shell's figures are handed over.
 extern "C" __declspec(dllimport) void angle_uwp_set_panel_size(int32_t width, int32_t height);
+#endif
 
 // src/skel/w10m/w10m.cpp: once a frame, on the game thread; what the player is doing
 // (HOST_CONTEXT_*) comes back. The second: from now on a cutscene is skipped as it starts.
@@ -46,8 +57,10 @@ struct GLFWmonitor {
 };
 
 struct GLFWwindow {
+#ifndef REVC_D3D11
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
+#endif
     int width = 0, height = 0;
     int esMajor = 0;            // the OpenGL ES version the context was asked for and given
     bool threadTried = false;   // the drawing thread has been started for this context, or not wanted
@@ -88,8 +101,10 @@ GLFWwindow* gWindow = nullptr;
 Hints gHints;
 GLFWerrorfun gOnError = nullptr;
 GLFWjoystickfun gOnJoystick = nullptr;
+#ifndef REVC_D3D11
 EGLDisplay gDisplay = EGL_NO_DISPLAY;
 EGLConfig gConfig = nullptr;
+#endif
 int gSwapInterval = -1;
 HostPad gPad;
 std::deque<MouseStep> gMouse;
@@ -98,12 +113,14 @@ std::deque<MouseStep> gMouse;
 std::atomic<LONGLONG> gShowTicks{0};
 LONGLONG gScriptStart;  // when the clock of REVC_KEYS began: 0 until the menu is up
 
+#ifndef REVC_D3D11
 void Fail(const char* what) {
     char text[160];
     snprintf(text, sizeof(text), "egl: %s failed, error 0x%04x", what, (unsigned)eglGetError());
     host_log(text);
     if (gOnError) gOnError(0x00010008 /* GLFW_PLATFORM_ERROR */, text);
 }
+#endif
 
 void RefreshMode() {
     int32_t w = 0, h = 0;
@@ -118,6 +135,7 @@ void RefreshMode() {
     gMonitor.mode.refreshRate = 60;
 }
 
+#ifndef REVC_D3D11
 // REVC_ANGLE_FL=9_3 (or 9_1, 10_0...) caps the Direct3D feature level, to try on one phone
 // what another gets: 9_3 is OpenGL ES 2.0, as on most Lumias.
 bool OpenDisplay() {
@@ -186,13 +204,18 @@ bool OpenDisplay() {
               vendor ? vendor : "?", (int)alpha, (int)depth, (int)stencil);
     return true;
 }
+#endif
 
 void SyncPanelSize(GLFWwindow* window, bool notify) {
     int32_t w = 0, h = 0;
     if (!host_panel_size(&w, &h) || (w == window->width && h == window->height)) return;
+#ifdef REVC_D3D11
+    if (window->width) rwd3d11_resize(w, h);  // not the first time: the renderer has not started yet
+#else
     // in its turn among the frames, where there is a drawing thread: ANGLE resizes at a swap
     glt_post([](void* size) { angle_uwp_set_panel_size((int32_t)((uintptr_t)size >> 16), (int32_t)((uintptr_t)size & 0xFFFF)); },
              reinterpret_cast<void*>(((uintptr_t)w << 16) | ((uintptr_t)h & 0xFFFF)));
+#endif
     window->width = w;
     window->height = h;
     RefreshMode();
@@ -316,6 +339,16 @@ void NotePerformance(LONGLONG swapStart, LONGLONG swapEnd, GLFWwindow* window) {
                   stats.drawingMs / frames, (double)stats.calls / frames,
                   gShowTicks.exchange(0) * 1000.0 / (double)frequency.QuadPart / frames, (unsigned)stats.answers,
                   stats.answerWaitMs / frames, (unsigned)stats.timesFull);
+        host_logf("perf: the drawing thread ran out of calls and slept %.1f times a frame", (double)stats.sleeps / frames);
+        if (stats.kindCalls[0] + stats.kindCalls[1])
+            host_logf("perf: of the drawing thread's time, ms a frame: %.0f draws %.1f (of over a millisecond each: "
+                      "%.1f a frame, %.1f ms), %.0f draws from memory %.1f (with %.0f KB; of over a millisecond: %.1f a "
+                      "frame, %.1f ms), textures handed over %.1f (%u of them), buffers filled %.1f (%u)",
+                      (double)stats.kindCalls[0] / frames, stats.kindMs[0] / frames, (double)stats.longDraws[0] / frames,
+                      stats.longDrawMs[0] / frames, (double)stats.kindCalls[1] / frames, stats.kindMs[1] / frames,
+                      stats.memoryDrawKB / frames, (double)stats.longDraws[1] / frames, stats.longDrawMs[1] / frames,
+                      stats.kindMs[2] / frames, (unsigned)stats.kindCalls[2], stats.kindMs[3] / frames,
+                      (unsigned)stats.kindCalls[3]);
     }
     windowStart = swapEnd;
     frames = slow = 0;
@@ -338,12 +371,14 @@ double SecondsSince(LONGLONG start) {
 // The log is the only window into a phone, and the Device Portal has no screen to show and no
 // finger to lend. Two settings (LocalState\env.NAME=value, see the shell) make up for that.
 
+#ifndef REVC_D3D11
 // The OpenGL ES calls this file makes itself, by name: it is linked against EGL alone.
 struct GlCalls {
     void(__stdcall* readPixels)(int, int, int, int, unsigned, unsigned, void*) = nullptr;
     void(__stdcall* getIntegerv)(unsigned, int*) = nullptr;
     void(__stdcall* bindFramebuffer)(unsigned, unsigned) = nullptr;
 };
+#endif
 
 // REVC_FRAMESHOT=5: every so many seconds, and for the first frame, the picture about to be
 // shown is saved as LocalState\frame.bmp (640 wide at most), to be fetched with
@@ -353,17 +388,23 @@ void SaveFrame(GLFWwindow* window, int frame) {
     static bool keep;          // REVC_FRAMESHOT=1.5k: every one under a name of its own, frame_001.bmp...
     static int kept;
     static LONGLONG last;
+#ifndef REVC_D3D11
     static GlCalls gl;
+#endif
     if (every < 0) {
         const char* value = getenv("REVC_FRAMESHOT");
         every = value ? atof(value) : 0;
         keep = value && strchr(value, 'k');
         if (value && every < 0.2) every = keep ? 0.2 : 1;
         if (every) {
+#ifdef REVC_D3D11
+            if (!host_local_folder()) every = 0;
+#else
             gl.readPixels = reinterpret_cast<decltype(gl.readPixels)>(eglGetProcAddress("glReadPixels"));
             gl.getIntegerv = reinterpret_cast<decltype(gl.getIntegerv)>(eglGetProcAddress("glGetIntegerv"));
             gl.bindFramebuffer = reinterpret_cast<decltype(gl.bindFramebuffer)>(eglGetProcAddress("glBindFramebuffer"));
             if (!gl.readPixels || !gl.getIntegerv || !gl.bindFramebuffer || !host_local_folder()) every = 0;
+#endif
             host_logf("glfw: REVC_FRAMESHOT, %s every %.1f s", keep ? "a frame_NNN.bmp" : "frame.bmp", every);
         }
     }
@@ -372,6 +413,10 @@ void SaveFrame(GLFWwindow* window, int frame) {
     int w = window->width, h = window->height;
     if (w <= 0 || h <= 0) return;
     std::vector<unsigned char> pixels((size_t)w * h * 4);
+#ifdef REVC_D3D11
+    // the renderer's picture, bottom row first as OpenGL has it
+    if (!rwd3d11_read_back(w, h, pixels.data())) return;
+#else
     struct Grab {
         GlCalls* gl;
         int w, h;
@@ -388,6 +433,7 @@ void SaveFrame(GLFWwindow* window, int frame) {
             if (bound) g->gl->bindFramebuffer(0x8D40, (unsigned)bound);
         },
         &grab);
+#endif
     // a BMP's rows go bottom to top, as OpenGL's do
     int step = keep ? (w + 319) / 320 : (w + 639) / 640;  // a series is of small pictures
     int outW = w / step, outH = h / step;
@@ -497,10 +543,15 @@ void Show(void* param) {
     GLFWwindow* window = static_cast<GLFWwindow*>(param);
     static int shown;
     LONGLONG from = Ticks();
+#ifdef REVC_D3D11
+    (void)window;
+    rwd3d11_show(gSwapInterval);
+#else
     if (!eglSwapBuffers(gDisplay, window->surface)) {
         static int noted;
         if (noted++ < 8) Fail("eglSwapBuffers");
     }
+#endif
     gShowTicks.fetch_add(Ticks() - from, std::memory_order_relaxed);
     // the first ones by name: what a phone does next has more than once depended on them
     if (++shown <= 3) host_logf("glfw: frame %d is shown (swap interval %d)", shown, gSwapInterval);
@@ -513,8 +564,12 @@ void Show(void* param) {
 void StartDrawingThread(GLFWwindow* window) {
     if (window->threadTried) return;
     window->threadTried = true;
+#ifdef REVC_D3D11
+    return;  // it is OpenGL's calls that the drawing thread makes
+#endif
     const char* setting = getenv("REVC_GL_THREAD");
     if (!(setting ? atoi(setting) != 0 : window->esMajor < 3)) return;
+    glt_timing(getenv("REVC_PERF") != nullptr);
     if (glt_start(host_log))
         host_log("glfw: from here on OpenGL ES is called on a drawing thread, the game's own goes on meanwhile "
                  "(REVC_GL_THREAD=0: as before)");
@@ -533,8 +588,10 @@ int glfwInit(void) {
 
 void glfwTerminate(void) {
     if (gWindow) glfwDestroyWindow(gWindow);
+#ifndef REVC_D3D11
     if (gDisplay != EGL_NO_DISPLAY) eglTerminate(gDisplay);
     gDisplay = EGL_NO_DISPLAY;
+#endif
 }
 
 GLFWerrorfun glfwSetErrorCallback(GLFWerrorfun callback) {
@@ -578,6 +635,21 @@ void glfwWindowHint(int hint, int value) {
 }
 
 GLFWwindow* glfwCreateWindow(int, int, const char*, GLFWmonitor*, GLFWwindow*) {
+#ifdef REVC_D3D11
+    if (gWindow) {
+        host_log("glfw: a second window was asked for");
+        return nullptr;
+    }
+    // no context: the panel's size and its input. The renderer makes what is drawn into.
+    GLFWwindow* window = new GLFWwindow();
+    SyncPanelSize(window, false);
+    host_logf("glfw: a window of %dx%d, the picture is Direct3D's", window->width, window->height);
+    gSwapInterval = 1;
+    gMouse.clear();
+    LoadScript();
+    gWindow = window;
+    return window;
+#else
     if (gHints.clientApi != GLFW_OPENGL_ES_API) return nullptr;  // ANGLE is OpenGL ES
     if (gWindow) {
         host_log("glfw: a second window was asked for");
@@ -630,16 +702,19 @@ GLFWwindow* glfwCreateWindow(int, int, const char*, GLFWmonitor*, GLFWwindow*) {
     LoadScript();
     gWindow = window;
     return window;
+#endif
 }
 
 void glfwDestroyWindow(GLFWwindow* window) {
     if (!window) return;
+#ifndef REVC_D3D11
     glt_stop();  // the context comes back first, with everything asked of it done
     if (gDisplay != EGL_NO_DISPLAY) {
         eglMakeCurrent(gDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         if (window->surface != EGL_NO_SURFACE) eglDestroySurface(gDisplay, window->surface);
         if (window->context != EGL_NO_CONTEXT) eglDestroyContext(gDisplay, window->context);
     }
+#endif
     if (gWindow == window) gWindow = nullptr;
     delete window;
 }
@@ -661,6 +736,9 @@ void glfwGetFramebufferSize(GLFWwindow* window, int* width, int* height) {
 }
 
 void glfwMakeContextCurrent(GLFWwindow* window) {
+#ifdef REVC_D3D11
+    (void)window;  // there is no context
+#else
     if (glt_on()) {
         // whoever asks means this thread: the drawing thread gives the context back, and is
         // started again after the next frame
@@ -672,13 +750,18 @@ void glfwMakeContextCurrent(GLFWwindow* window) {
         return;
     }
     if (!eglMakeCurrent(gDisplay, window->surface, window->surface, window->context)) Fail("eglMakeCurrent");
+#endif
 }
 
 void glfwSwapInterval(int interval) {
+#ifdef REVC_D3D11
+    gSwapInterval = interval;  // the renderer is told with every frame
+#else
     if (interval == gSwapInterval || gDisplay == EGL_NO_DISPLAY) return;  // librw sets it before every swap
     gSwapInterval = interval;
     // it is the current context's surface that EGL sets it for
     glt_call([](void* value) { eglSwapInterval(gDisplay, (EGLint)(intptr_t)value); }, reinterpret_cast<void*>((intptr_t)interval));
+#endif
 }
 
 void glfwSwapBuffers(GLFWwindow* window) {
@@ -697,7 +780,12 @@ void glfwSwapBuffers(GLFWwindow* window) {
 }
 
 GLFWglproc glfwGetProcAddress(const char* procname) {
+#ifdef REVC_D3D11
+    (void)procname;
+    return nullptr;
+#else
     return reinterpret_cast<GLFWglproc>(eglGetProcAddress(procname));
+#endif
 }
 
 /* ===[ Callbacks ]=== */

@@ -29,8 +29,15 @@ using namespace winrt::Windows::UI::Core;
 using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Xaml::Controls;
 
+#ifdef REVC_D3D11
+// The game draws with Direct3D 11 itself (w10m/rwd3d11) and hands its swap chain over for the
+// panel (host_set_swap_chain)
+#include <dxgi1_3.h>
+#include <windows.ui.xaml.media.dxinterop.h>
+#else
 extern "C" __declspec(dllimport) void angle_uwp_set_panel_scale(float x, float y);
 extern "C" __declspec(dllimport) void angle_uwp_set_logger(void (*logger)(const char*));
+#endif
 
 namespace {
 
@@ -229,6 +236,13 @@ std::atomic<DWORD> gUiThread{0}, gGameThread{0};
 revc::TouchState gTouch;
 revc::Gamepad* gGamepad = nullptr;
 std::function<void(std::string)> gFatal;  // set by the App: shows it and ends the app
+// The About over the game (the game's Options menu); set by the App, called by the game's thread
+std::function<void()> gAboutShow, gAboutClose;
+// The Direct3D renderer's swap chain into the panel; set by the App, called by the game's thread
+std::function<bool(void*)> gSetSwapChain;
+// While it is up the pad is not the game's: 0 not up; 1 up, the button that opened it not let
+// go yet; 2 up, a button of the pad closes it; 3 closed, that button not let go yet
+std::atomic<int> gAboutPad{0};
 
 void Push(int32_t type, int32_t code, float x = 0, float y = 0) {
     std::lock_guard<std::mutex> lock(gEventLock);
@@ -454,6 +468,8 @@ extern "C" bool host_panel_native_size(int32_t* w, int32_t* h) {
     return *w > 0 && *h > 0;
 }
 
+extern "C" bool host_set_swap_chain(void* swapChain, int32_t, int32_t) { return gSetSwapChain && gSetSwapChain(swapChain); }
+
 extern "C" bool host_poll_event(HostEvent* e) {
     std::lock_guard<std::mutex> lock(gEventLock);
     if (gEvents.empty()) return false;
@@ -465,9 +481,26 @@ extern "C" bool host_poll_event(HostEvent* e) {
 extern "C" bool host_has_focus(void) { return gFocus.load(); }
 
 extern "C" void host_pad_state(HostPad* pad) {
-    if (gGamepad && gGamepad->Read(pad)) return;
-    std::lock_guard<std::mutex> lock(gTouch.lock);
-    *pad = gTouch.pad;
+    if (!gGamepad || !gGamepad->Read(pad)) {
+        std::lock_guard<std::mutex> lock(gTouch.lock);
+        *pad = gTouch.pad;
+    }
+    // With the About over the game, a button of the pad closes it and the game's menu behind
+    // it sees a pad nobody touches
+    int about = gAboutPad.load();
+    if (!about) return;
+    bool pressed = false;
+    for (uint8_t button : pad->buttons) pressed = pressed || button != 0;
+    if (about == 1 && !pressed) {
+        gAboutPad.compare_exchange_strong(about, 2);
+    } else if (about == 2 && pressed) {
+        if (gAboutPad.compare_exchange_strong(about, 3) && gAboutClose) gAboutClose();
+    } else if (about == 3 && !pressed) {
+        gAboutPad.compare_exchange_strong(about, 0);
+    }
+    memset(pad->buttons, 0, sizeof(pad->buttons));
+    for (float& axis : pad->axes) axis = 0;
+    pad->axes[HOST_AXIS_LT] = pad->axes[HOST_AXIS_RT] = -1;
 }
 
 extern "C" void host_set_context(int32_t context) { gContext.store(context); }
@@ -475,6 +508,10 @@ extern "C" void host_set_context(int32_t context) { gContext.store(context); }
 extern "C" void host_set_pad_style(int32_t style) { gPadStyle.store(style); }
 
 extern "C" int32_t host_take_requests(void) { return gRequests.exchange(0); }
+
+extern "C" void host_show_about(void) {
+    if (gAboutShow) gAboutShow();
+}
 
 extern "C" const wchar_t* host_local_folder(void) { return gLocalFolder.empty() ? nullptr : gLocalFolder.c_str(); }
 
@@ -532,6 +569,12 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
     bool snapshots_ = false;
     int32_t preview_ = -1;
     DispatcherTimer snapshotTimer_{nullptr};
+    DispatcherTimer endTimer_{nullptr};  // REVC_FILES_SCREEN=end
+    Grid about_{nullptr};                // who made the port, over the game: see ShowAbout
+    DispatcherTimer aboutTimer_{nullptr};  // REVC_ABOUT_CLOSE
+#ifdef REVC_D3D11
+    winrt::com_ptr<IDXGISwapChain> swapChain_;  // the game's, as the panel shows it
+#endif
 
     App() {
         gUiThread = ::GetCurrentThreadId();
@@ -556,6 +599,9 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
             CaptureOutput(local_);
             _putenv_s("ALSOFT_LOGLEVEL", "2");  // OpenAL Soft's warnings and errors, into the log
             ReadEnvironment(local_);
+            // the first T() is after this: REVC_LANG is among those settings
+            Log("shell: the phone's language is " + Utf8(PhoneLanguage()) + ", the shell speaks " +
+                (Russian() ? "Russian" : "English"));
             gVerbose = _wgetenv(L"REVC_VERBOSE") != nullptr;
             // For looking at the shell from the PC, which has no other view of the phone's screen:
             // REVC_SNAPSHOT=1 saves the XAML over the panel (the files screen, the pad; not the
@@ -586,6 +632,7 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
         }
         version_ = version;
         RequestedTheme(ApplicationTheme::Dark);  // the files screen's buttons and dialogs
+#ifndef REVC_D3D11
         // ANGLE's own notes, trouble only (it reports every texture and program otherwise)
         angle_uwp_set_logger([](const char* text) {
             if (!text) return;
@@ -599,6 +646,7 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                 }
             }
         });
+#endif
         UnhandledException([](auto const&, UnhandledExceptionEventArgs const& e) {
             Log("shell: unhandled exception: " + Utf8(std::wstring(e.Message())));
         });
@@ -641,6 +689,31 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
             gFatal = [this](std::string text) {
                 top_.Dispatcher().RunAsync(CoreDispatcherPriority::High, [this, text] { Fatal(text); });
             };
+            gAboutShow = [this] {
+                top_.Dispatcher().RunAsync(CoreDispatcherPriority::Normal, [this] { ShowAbout(); });
+            };
+            gAboutClose = [this] {
+                top_.Dispatcher().RunAsync(CoreDispatcherPriority::Normal, [this] { CloseAbout(); });
+            };
+#ifdef REVC_D3D11
+            // on the UI thread, which is the only one that may touch the panel; the game's waits
+            gSetSwapChain = [this](void* chain) {
+                struct Call {
+                    HANDLE done = ::CreateEventExW(nullptr, nullptr, CREATE_EVENT_MANUAL_RESET, EVENT_ALL_ACCESS);
+                    bool ok = false;
+                    ~Call() {
+                        if (done) ::CloseHandle(done);
+                    }
+                };
+                auto call = std::make_shared<Call>();
+                top_.Dispatcher().RunAsync(CoreDispatcherPriority::High, [this, chain, call] {
+                    call->ok = SetSwapChain(chain);
+                    ::SetEvent(call->done);
+                });
+                ::WaitForSingleObjectEx(call->done, 15000, FALSE);
+                return call->ok;
+            };
+#endif
 
             std::wstring package = std::wstring(Package::Current().InstalledLocation().Path());
             files_ = std::make_unique<GameFiles>(top_, local_, package, version_, [this] { Play(); }, Log);
@@ -656,7 +729,9 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                 touch_->Style(gPadStyle.load());
                 Presentation();
                 // The marker of a start that never got to the game's menu: ask before trying again
-            } else if (files_->Present() && !FileExists(starting_) && files_->Overlay()) {
+                // REVC_FILES_SCREEN=1: the files screen though the game is there (=end: its foot)
+            } else if (!_wgetenv(L"REVC_FILES_SCREEN") && files_->Present() && !FileExists(starting_) &&
+                       files_->Overlay()) {
                 Play();
             } else {
                 files_->Open(FileExists(starting_) && files_->Present()
@@ -668,6 +743,19 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                                      L"revc.log в папке приложения.")
                                  : L"");
                 Presentation();
+                if (const wchar_t* shown = _wgetenv(L"REVC_FILES_SCREEN")) {
+                    if (wcscmp(shown, L"end") == 0) {
+                        // once it is laid out
+                        endTimer_ = DispatcherTimer();
+                        endTimer_.Interval(std::chrono::milliseconds(1200));
+                        endTimer_.Tick([this](auto const&, auto const&) {
+                            endTimer_.Stop();
+                            files_->ShowEnd();
+                            SnapshotSoon();
+                        });
+                        endTimer_.Start();
+                    }
+                }
             }
 
             tick_ = DispatcherTimer();
@@ -794,11 +882,88 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
     void Fatal(std::string const& text) {
         using namespace winrt::Windows::UI::Popups;
         try {
-            MessageDialog dialog(winrt::hstring(Wide(text.c_str())), L"reVC");
+            auto dialog = Dialog(winrt::hstring(Wide(text.c_str())), L"reVC");
             dialog.ShowAsync().Completed([](auto const&, auto const&) { ::TerminateProcess(::GetCurrentProcess(), 3); });
         } catch (...) {
             ::TerminateProcess(::GetCurrentProcess(), 3);
         }
+    }
+
+    // ===[ About ]===
+    // "About the port" in the game's Options menu (src/core/re3.cpp): what the foot of the files
+    // screen says, over the game. On the stage, not in a dialog of the system's: the stage is
+    // what is turned to the way the phone is held when the window stays portrait. It covers the
+    // panel and the pad, so no touch gets to the game's menu behind it; the pad's buttons and
+    // the keys do not either (host_pad_state, HookWindow), they close it.
+
+    bool AboutUp() const { return about_ && about_.Visibility() == Visibility::Visible; }
+
+    void ShowAbout() {
+        if (!about_) {
+            about_ = Grid();
+            about_.Background(Brush(0xF214091C));
+            Canvas::SetZIndex(about_, 100);  // over whatever the pad adds to the stage later
+
+            ScrollViewer scroll;
+            scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+            scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+            scroll.HorizontalScrollMode(ScrollMode::Disabled);
+            scroll.Margin({0, 60, 0, 0});  // under the title and the button
+            StackPanel column;
+            column.MaxWidth(620);
+            column.Margin({24, 0, 24, 24});
+            GameFiles::Credits(column);
+            scroll.Content(column);
+            about_.Children().Append(scroll);
+
+            TextBlock title;
+            title.Text(winrt::hstring(L"reVC " + version_));
+            title.FontSize(22);
+            title.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
+            title.Foreground(Brush(0xFFFF6EC7));
+            title.HorizontalAlignment(HorizontalAlignment::Left);
+            title.VerticalAlignment(VerticalAlignment::Top);
+            title.Margin({24, 16, 0, 0});
+            about_.Children().Append(title);
+
+            Button close;
+            close.Content(winrt::box_value(winrt::hstring(T(L"Close", L"Закрыть"))));
+            close.FontSize(16);
+            close.Height(44);
+            close.MinWidth(110);
+            close.HorizontalAlignment(HorizontalAlignment::Right);
+            close.VerticalAlignment(VerticalAlignment::Top);
+            close.Margin({0, 8, 16, 0});
+            close.Click([this](auto const&, auto const&) { CloseAbout(); });
+            about_.Children().Append(close);
+
+            about_.Visibility(Visibility::Collapsed);
+            stage_.Children().Append(about_);
+        }
+        if (AboutUp()) return;
+        about_.Visibility(Visibility::Visible);
+        gAboutPad = 1;
+        Log("shell: the About is up");
+        SnapshotSoon();
+        // REVC_ABOUT_CLOSE=4: it closes itself after so many seconds, for a run with nobody at
+        // the phone (the keys of REVC_KEYS are the game's, they do not pass through the shell)
+        if (const wchar_t* after = _wgetenv(L"REVC_ABOUT_CLOSE")) {
+            aboutTimer_ = DispatcherTimer();
+            aboutTimer_.Interval(std::chrono::milliseconds(static_cast<int>((std::max)(_wtof(after), 0.5) * 1000)));
+            aboutTimer_.Tick([this](auto const&, auto const&) {
+                aboutTimer_.Stop();
+                CloseAbout();
+            });
+            aboutTimer_.Start();
+        }
+    }
+
+    void CloseAbout() {
+        if (!AboutUp()) return;
+        about_.Visibility(Visibility::Collapsed);
+        gAboutPad = 3;  // the button that closed it is not the game's either
+        Log("shell: the About is closed");
+        SnapshotSoon();
     }
 
     // ===[ Resolution ]===
@@ -859,7 +1024,7 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
         Log("shell: resolution setting " + std::to_string(resolution_));
         // ANGLE scales a swap chain when it makes it: the one that is up keeps its size
         try {
-            winrt::Windows::UI::Popups::MessageDialog dialog(winrt::hstring(
+            auto dialog = Dialog(winrt::hstring(
                 std::wstring(resolution_ > 0
                                  ? T(L"The game will be drawn at ", L"Игра будет рисоваться в ") + std::to_wstring(resolution_) +
                                        T(L"% of the screen's resolution", L"% разрешения экрана")
@@ -1029,10 +1194,15 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
         int32_t w = static_cast<int32_t>(nativeW * renderScale_ + 0.5);
         int32_t h = static_cast<int32_t>(nativeH * renderScale_ + 0.5);
         bool changed = w != gPanelW.load() || h != gPanelH.load() || sx != scaleX_ || sy != scaleY_;
+#ifndef REVC_D3D11
         // ANGLE divides the swap chain's size by this to fill the panel: render pixels per DIP
         angle_uwp_set_panel_scale(static_cast<float>(sx * renderScale_), static_cast<float>(sy * renderScale_));
+#endif
         scaleX_ = sx;
         scaleY_ = sy;
+#ifdef REVC_D3D11
+        ScaleSwapChain();
+#endif
         gNativeW = static_cast<int32_t>(nativeW + 0.5);
         gNativeH = static_cast<int32_t>(nativeH + 0.5);
         gPanelW = w;
@@ -1042,6 +1212,43 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                 " px, scale " + std::to_string(sx) + ", render target " + std::to_string(w) + "x" + std::to_string(h));
         StartGame();
     }
+
+#ifdef REVC_D3D11
+    // ===[ The picture ]===
+    // The game's renderer makes a swap chain of as many pixels as it draws (the render target's
+    // size) and the panel shows it: stretched over all of the panel, whose size is in DIPs.
+
+    bool SetSwapChain(void* chain) {
+        try {
+            auto native = panel_.as<ISwapChainPanelNative>();
+            swapChain_ = nullptr;
+            if (chain) swapChain_.copy_from(static_cast<IDXGISwapChain*>(chain));
+            HRESULT hr = native->SetSwapChain(swapChain_.get());
+            if (FAILED(hr)) {
+                Log("shell: the panel did not take the swap chain, " + std::to_string(hr));
+                swapChain_ = nullptr;
+                return false;
+            }
+            ScaleSwapChain();
+            Log(chain ? "shell: the panel shows the game's swap chain" : "shell: the panel shows no swap chain");
+            return true;
+        } catch (winrt::hresult_error const& e) {
+            Log("shell: the swap chain could not be set, " + std::to_string(e.code().value));
+            return false;
+        }
+    }
+
+    // a pixel of the swap chain is 1 / (render pixels per DIP) of a DIP
+    void ScaleSwapChain() {
+        if (!swapChain_ || scaleX_ <= 0 || scaleY_ <= 0 || renderScale_ <= 0) return;
+        winrt::com_ptr<IDXGISwapChain2> chain;
+        if (!swapChain_.try_as(chain)) return;
+        DXGI_MATRIX_3X2_F stretch = {};
+        stretch._11 = static_cast<float>(1.0 / (scaleX_ * renderScale_));
+        stretch._22 = static_cast<float>(1.0 / (scaleY_ * renderScale_));
+        chain->SetMatrixTransform(&stretch);
+    }
+#endif
 
     void HookPanel() {
         using winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs;
@@ -1077,6 +1284,14 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
         // A keyboard (Bluetooth, USB, Continuum): the game's own keyboard controls
         window.KeyDown([this](auto const&, KeyEventArgs const& a) {
             if (!gameReady_) return;  // the files screen takes keys itself
+            if (AboutUp()) {
+                // A key newly pressed closes the About and is not the game's (the key that
+                // opened it may still be down and repeating). Its release goes to the game
+                // like any other: one without a press before it is nothing there.
+                if (!a.KeyStatus().WasKeyDown) CloseAbout();
+                a.Handled(true);
+                return;
+            }
             if (!a.KeyStatus().WasKeyDown) Push(HOST_EV_KEY_DOWN, static_cast<int32_t>(a.VirtualKey()));
             a.Handled(true);
         });
@@ -1104,6 +1319,10 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                 [this](auto const&, BackRequestedEventArgs const& a) {
                     if (!gameReady_) return;
                     a.Handled(true);
+                    if (AboutUp()) {
+                        CloseAbout();
+                        return;
+                    }
                     Push(HOST_EV_KEY_DOWN, VK_ESCAPE);
                     Push(HOST_EV_KEY_UP, VK_ESCAPE);
                 });

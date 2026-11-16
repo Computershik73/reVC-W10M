@@ -31,7 +31,18 @@ struct GltStats {
     uint32_t calls;       // made by the drawing thread
     uint32_t answers;     // calls the caller waited for
     uint32_t timesFull;   // the caller found the queue full
+    uint32_t sleeps;      // times the drawing thread ran out of calls and slept
+    // with glt_timing(true), the drawing thread's time by kind of call: draws from buffers,
+    // draws from the caller's memory, textures handed over, buffers filled
+    double kindMs[4];
+    uint32_t kindCalls[4];
+    double longDrawMs[2];  // of the draws of each kind, those that took over a millisecond each
+    uint32_t longDraws[2];
+    double memoryDrawKB;   // what the draws from memory brought with them
 };
 void glt_stats(GltStats* stats);
+// Whether the drawing thread times its draws and what is handed over to it (two readings of
+// the clock for each): for a log of where its time goes.
+void glt_timing(bool on);
 
 #endif

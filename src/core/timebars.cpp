@@ -17,6 +17,10 @@ struct sTimeBar
 	float startTime;
 	float endTime;
 	int32 unk;
+#ifdef GTA_W10M
+	// librw's counts of draws while the timer ran (REVC_PERF=1): geometry and immediate
+	uint32 draws, immediates;
+#endif
 };
 
 struct
@@ -39,7 +43,7 @@ static uint32 tbFrames;
 // The timed parts of the frame last drawn and how long each took, for the phone's log
 // (skel/w10m): the log is where a phone's frames can be looked into.
 int32
-tbLastFrame(uint32 *frame, const char **names, float *milliseconds, int32 max)
+tbLastFrame(uint32 *frame, const char **names, float *milliseconds, uint32 *draws, uint32 *immediates, int32 max)
 {
 	int32 n = 0;
 	float perUnit = (float)CTimer::GetCyclesPerFrame() / (float)CTimer::GetCyclesPerMillisecond();
@@ -49,6 +53,8 @@ tbLastFrame(uint32 *frame, const char **names, float *milliseconds, int32 max)
 			continue;
 		names[n] = TimerBar.Timers[i].name;
 		milliseconds[n] = (TimerBar.Timers[i].endTime - TimerBar.Timers[i].startTime) * perUnit;
+		draws[n] = TimerBar.Timers[i].draws;
+		immediates[n] = TimerBar.Timers[i].immediates;
 		n++;
 	}
 	return n;
@@ -80,6 +86,10 @@ void tbStartTimer(int32 unk, Const char *name)
 	strcpy(TimerBar.Timers[TimerBar.count].name, name);
 	TimerBar.Timers[TimerBar.count].unk = unk;
 	TimerBar.Timers[TimerBar.count].startTime = (float)CTimer::GetCurrentTimeInCycles() / (float)CTimer::GetCyclesPerFrame();
+#ifdef GTA_W10M
+	TimerBar.Timers[TimerBar.count].draws = rw::gl3::perf.draws;
+	TimerBar.Timers[TimerBar.count].immediates = rw::gl3::perf.immediates;
+#endif
 	TimerBar.count++;
 }
 
@@ -92,6 +102,10 @@ void tbEndTimer(Const char* name)
 	}
 	assert(n != 1500);
 	TimerBar.Timers[n].endTime = (float)CTimer::GetCurrentTimeInCycles() / (float)CTimer::GetCyclesPerFrame();
+#ifdef GTA_W10M
+	TimerBar.Timers[n].draws = rw::gl3::perf.draws - TimerBar.Timers[n].draws;
+	TimerBar.Timers[n].immediates = rw::gl3::perf.immediates - TimerBar.Timers[n].immediates;
+#endif
 }
 
 float Diag_GetFPS()

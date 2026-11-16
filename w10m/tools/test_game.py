@@ -1,6 +1,6 @@
 """Run the game as the port builds it on this PC (x64), without the shell and without a screen.
 
-    python w10m/tools/test_game.py [--game DIR] [--frames N] [--level 9_3] [--press FRAME:BUTTON ...]
+    python w10m/tools/test_game.py [--game DIR] [--frames N] [--seconds S] [--level 9_3] [--press FRAME:BUTTON ...]
                                    [--key FRAME:VK ...] [--timeout SECONDS]
 
 The game's own code with the port's changes (GTA_W10M), the port's GLFW layer over ANGLE (drawing
@@ -38,14 +38,21 @@ ANGLE_X64 = os.environ.get("REVC_ANGLE_BIN_X64", os.path.join(env.BUTTERSCOTCH, 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--game", help="the game's folder (default: a folder with only reVC's gamefiles)")
-    ap.add_argument("--frames", type=int, default=300)
+    ap.add_argument("--frames", type=int, default=300,
+                    help="polls of the event queue: more than one a frame where the game waits for its frame's time")
+    ap.add_argument("--seconds", type=float, default=0, help="close the window after so many seconds instead (--frames 0)")
     ap.add_argument("--level", default="none", help="cap Direct3D at this feature level (9_3, 9_1, 10_0)")
     ap.add_argument("--press", action="append", default=[], metavar="FRAME:BUTTON")
     ap.add_argument("--key", action="append", default=[], metavar="FRAME:VK")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--build-only", action="store_true")
+    ap.add_argument("--renderer", default="angle", choices=["angle", "d3d11"],
+                    help="angle: OpenGL ES through ANGLE; d3d11: the Direct3D 11 renderer (w10m/rwd3d11)")
     a = ap.parse_args()
-    if not os.path.isfile(os.path.join(ANGLE_X64, "libGLESv2.dll")):
+    global BUILD
+    if a.renderer == "d3d11":
+        BUILD = os.path.join(env.WORK, "test-game-d3d11")
+    elif not os.path.isfile(os.path.join(ANGLE_X64, "libGLESv2.dll")):
         sys.exit(f"no x64 ANGLE in {ANGLE_X64} (REVC_ANGLE_BIN_X64)")
     e = test_audio.host_env()
     cl = os.path.join(env.VC, "bin", "Hostx64", "x64", "cl.exe").replace("\\", "/")
@@ -55,7 +62,8 @@ def main():
          "-DOPENAL_SOURCE_DIR=" + env.OPENAL.replace("\\", "/"),
          "-DMPG123_SOURCE_DIR=" + env.MPG123.replace("\\", "/"),
          "-DANGLE_INCLUDE_DIR=" + env.ANGLE_INCLUDE.replace("\\", "/"),
-         "-DANGLE_LIB_DIR=" + ANGLE_X64.replace("\\", "/")],
+         "-DANGLE_LIB_DIR=" + ANGLE_X64.replace("\\", "/"),
+         "-DREVC_RENDERER=" + a.renderer, "-DREVC_PYTHON=" + sys.executable.replace("\\", "/")],
         ["cmake", "--build", BUILD, "--target", "game_test"],
     ]
     for cmd in steps:
@@ -83,7 +91,9 @@ def main():
     if a.level != "none":
         run_env["REVC_ANGLE_FL"] = a.level
     run_env["PATH"] = os.path.join(BUILD, "bin") + os.pathsep + run_env["PATH"]
-    cmd = [os.path.join(BUILD, "bin", "game_test.exe"), "--frames", str(a.frames)]
+    cmd = [os.path.join(BUILD, "bin", "game_test.exe"), "--frames", str(0 if a.seconds else a.frames)]
+    if a.seconds:
+        cmd += ["--seconds", str(a.seconds)]
     for press in a.press:
         cmd += ["--press", press]
     for key in a.key:
@@ -102,7 +112,7 @@ def main():
     print(f"--- {len(lines)} lines; " + ("timed out" if code is None else f"exit code {code}"))
     if not a.game:
         # no game to run: what counts is that the engine started on the port's GLFW layer
-        started = any("glfw: OpenGL ES" in line for line in lines)
+        started = any("glfw: OpenGL ES" in line or "d3d: Direct3D 11 at feature level" in line for line in lines)
         print("the engine started through the GLFW layer" if started else "the engine did NOT start")
         sys.exit(0 if started else 1)
     sys.exit(0 if code == 0 else 1)

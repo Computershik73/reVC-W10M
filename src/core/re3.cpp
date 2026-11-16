@@ -126,6 +126,17 @@ void LangJapSelect(int8 action)
 }
 #endif
 
+#ifdef GTA_W10M
+#include "host_api.h"
+
+// "About the port" in Options: the shell shows who made the port, over the game
+void AboutPortSelect(int8 action)
+{
+	if (action == FEOPTION_ACTION_SELECT)
+		host_show_about();
+}
+#endif
+
 void
 CustomFrontendOptionsPopulate(void)
 {
@@ -190,6 +201,11 @@ CustomFrontendOptionsPopulate(void)
 #endif
 #endif
 
+#ifdef GTA_W10M
+	// the last but one, before "Back"; its text is in CText::Get, no file of the game has it
+	FrontendOptionSetCursor(MENUPAGE_OPTIONS, -2, false);
+	FrontendOptionAddDynamic("FEO_ABT", 0, 0, MENUALIGN_CENTER, nil, nil, AboutPortSelect, nil, nil);
+#endif
 }
 #endif
 

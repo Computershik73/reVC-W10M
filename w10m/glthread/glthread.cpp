@@ -60,6 +60,7 @@ std::atomic<bool> gAsleep{false};          // the drawing thread has nothing to 
 std::atomic<size_t> gHeap{0};
 std::atomic<uint32_t> gFramesShown{0};
 std::atomic<LONGLONG> gBusyTicks{0};
+std::atomic<uint32_t> gSleeps{0};  // times the drawing thread ran out of calls and slept
 std::atomic<uint32_t> gCalls{0};
 HANDLE gWake, gAnswer, gShown, gThread;
 
@@ -164,6 +165,35 @@ void Wait(F&& f) {
     gAnswers++;
     gAnswerTicks += Ticks() - from;
 }
+
+// ===[ Where the drawing thread's time goes (glt_timing) ]===
+
+enum { kDraws, kMemoryDraws, kTextures, kBuffers, kKinds };
+std::atomic<bool> gTiming{false};
+std::atomic<LONGLONG> gKindTicks[kKinds];
+std::atomic<uint32_t> gKindCalls[kKinds];
+std::atomic<LONGLONG> gLongDrawTicks[2];
+std::atomic<uint32_t> gLongDraws[2];
+std::atomic<uint32_t> gMemoryDrawBytes{0};
+
+// In a command of the drawing thread: the time of what follows it there goes to its kind.
+struct Timed {
+    int kind;
+    LONGLONG from;
+    explicit Timed(int k) : kind(k), from(gTiming.load(std::memory_order_relaxed) ? Ticks() : 0) {}
+    ~Timed() {
+        if (!from) return;
+        static LARGE_INTEGER frequency;
+        if (!frequency.QuadPart) QueryPerformanceFrequency(&frequency);
+        LONGLONG took = Ticks() - from;
+        gKindTicks[kind].fetch_add(took, std::memory_order_relaxed);
+        gKindCalls[kind].fetch_add(1, std::memory_order_relaxed);
+        if (kind <= kMemoryDraws && took * 1000 > frequency.QuadPart) {
+            gLongDrawTicks[kind].fetch_add(took, std::memory_order_relaxed);
+            gLongDraws[kind].fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+};
 
 // A command with data: in the queue right behind it, or on the heap.
 struct DataCmd {
@@ -311,6 +341,7 @@ void APIENTRY w_glBufferData(GLenum target, GLsizeiptr size, const void* data, G
     C* c = ReserveWith<C>(data, size > 0 ? (size_t)size : 0);
     c->d.cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kBuffers);
         r_glBufferData(c->target, c->size, Data(&c->d), c->usage);
         Done(&c->d);
     };
@@ -330,6 +361,7 @@ void APIENTRY w_glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
     C* c = ReserveWith<C>(data, size > 0 ? (size_t)size : 0);
     c->d.cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kBuffers);
         r_glBufferSubData(c->target, c->offset, c->size, Data(&c->d));
         Done(&c->d);
     };
@@ -493,6 +525,7 @@ void APIENTRY w_glTexImage2D(GLenum target, GLint level, GLint internalformat, G
     C* c = ReserveWith<C>(pixels, bytes);
     c->d.cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kTextures);
         r_glTexImage2D(c->target, c->level, c->internalformat, c->width, c->height, c->border, c->format, c->type,
                        Data(&c->d));
         Done(&c->d);
@@ -525,6 +558,7 @@ void APIENTRY w_glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint
     C* c = ReserveWith<C>(pixels, bytes);
     c->d.cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kTextures);
         r_glTexSubImage2D(c->target, c->level, c->xoffset, c->yoffset, c->width, c->height, c->format, c->type,
                           Data(&c->d));
         Done(&c->d);
@@ -558,6 +592,7 @@ void APIENTRY w_glCompressedTexImage2D(GLenum target, GLint level, GLenum intern
     C* c = ReserveWith<C>(data, data ? (size_t)imageSize : 0);
     c->d.cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kTextures);
         r_glCompressedTexImage2D(c->target, c->level, c->internalformat, c->width, c->height, c->border, c->imageSize,
                                  Data(&c->d));
         Done(&c->d);
@@ -591,6 +626,7 @@ void APIENTRY w_glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoff
     C* c = ReserveWith<C>(data, (size_t)imageSize);
     c->d.cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kTextures);
         r_glCompressedTexSubImage2D(c->target, c->level, c->xoffset, c->yoffset, c->width, c->height, c->format,
                                     c->imageSize, Data(&c->d));
         Done(&c->d);
@@ -795,6 +831,7 @@ void DrawFromMemory(uint32_t attribs, GLenum mode, GLint first, GLsizei count, G
 
     uint8_t* space;
     C* c = ReserveSpace<C>(bytes, &space);
+    if (gTiming.load(std::memory_order_relaxed)) gMemoryDrawBytes.fetch_add((uint32_t)bytes, std::memory_order_relaxed);
     for (int p = 0; p < numPieces; p++) memcpy(space + pieces[p].at, pieces[p].from, pieces[p].to - pieces[p].from);
     if (indexType == GL_UNSIGNED_SHORT) {
         const uint16_t* in = (const uint16_t*)indices;
@@ -828,6 +865,7 @@ void DrawFromMemory(uint32_t attribs, GLenum mode, GLint first, GLsizei count, G
     }
     c->d.cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kMemoryDraws);
         const uint8_t* data = (const uint8_t*)Data(&c->d);
         if (c->numAttribs) {
             if (c->arrayBuffer) r_glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -860,6 +898,7 @@ void APIENTRY w_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     C* c = (C*)Reserve(Round(sizeof(C)));
     c->cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kDraws);
         r_glDrawArrays(c->mode, c->first, c->count);
     };
     c->mode = mode;
@@ -909,6 +948,7 @@ void APIENTRY w_glDrawElements(GLenum mode, GLsizei count, GLenum type, const vo
     C* c = (C*)Reserve(Round(sizeof(C)));
     c->cmd.run = [](Cmd* x) {
         C* c = (C*)x;
+        Timed timed(kDraws);
         r_glDrawElements(c->mode, c->count, c->type, c->indices);
     };
     c->mode = mode;
@@ -959,12 +999,20 @@ unsigned __stdcall Drawing(void* param) {
     SetEvent(gAnswer);  // handover is the caller's again
     if (!ok) return 0;
 
+    // REVC_GL_PRIORITY=0: as any other thread. Above them otherwise: a frame waits for this one
+    // (fewer frames of over 50 ms that way, if not more frames). Keeping this thread and the
+    // caller's on a core each was tried too (SetThreadAffinityMask, which kernel32 has on a
+    // phone): the scheduler does move this one between three of the four, and it made no
+    // difference.
+    const char* priority = getenv("REVC_GL_PRIORITY");
+    if (!priority || atoi(priority) != 0) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     uint32_t tail = gTail.load(std::memory_order_relaxed);
     gBusyFrom = Ticks();
     while (!gQuit) {
         uint32_t head = gHead.load(std::memory_order_acquire);
         if (head == tail) {
             NoteBusy();
+            gSleeps.fetch_add(1, std::memory_order_relaxed);
             gAsleep.store(true, std::memory_order_seq_cst);
             if (gHead.load(std::memory_order_seq_cst) == tail) WaitForSingleObjectEx(gWake, INFINITE, FALSE);
             gAsleep.store(false, std::memory_order_seq_cst);
@@ -1159,8 +1207,20 @@ void glt_stats(GltStats* stats) {
     stats->frameWaitMs = Milliseconds(gFrameTicks);
     stats->answerWaitMs = Milliseconds(gAnswerTicks);
     stats->calls = gCalls.exchange(0, std::memory_order_relaxed);
+    stats->sleeps = gSleeps.exchange(0, std::memory_order_relaxed);
     stats->answers = gAnswers;
     stats->timesFull = gTimesFull;
     gFrameTicks = gAnswerTicks = 0;
     gAnswers = gTimesFull = 0;
+    for (int kind = 0; kind < kKinds; kind++) {
+        stats->kindMs[kind] = Milliseconds(gKindTicks[kind].exchange(0, std::memory_order_relaxed));
+        stats->kindCalls[kind] = gKindCalls[kind].exchange(0, std::memory_order_relaxed);
+    }
+    for (int kind = 0; kind < 2; kind++) {
+        stats->longDrawMs[kind] = Milliseconds(gLongDrawTicks[kind].exchange(0, std::memory_order_relaxed));
+        stats->longDraws[kind] = gLongDraws[kind].exchange(0, std::memory_order_relaxed);
+    }
+    stats->memoryDrawKB = gMemoryDrawBytes.exchange(0, std::memory_order_relaxed) / 1024.0;
 }
+
+void glt_timing(bool on) { gTiming.store(on, std::memory_order_relaxed); }

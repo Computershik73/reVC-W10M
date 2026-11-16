@@ -90,9 +90,18 @@ void host_pad_state(HostPad* pad);
 void host_set_context(int32_t context);
 void host_set_pad_style(int32_t style);
 int32_t host_take_requests(void);
+/* "About the port" in the game's Options menu: the shell shows who made the port, over the
+ * game, until the player closes it. Returns at once. */
+void host_show_about(void);
 /* The app's own folder (LocalState: the log is there), for what a test run leaves to be fetched;
  * null where there is none. */
 const wchar_t* host_local_folder(void);
+
+/* The Direct3D 11 renderer (w10m/rwd3d11): its swap chain, an IDXGISwapChain1 made for
+ * composition, width by height pixels, is to be what the panel shows, stretched over all of
+ * it. Again with the same swap chain when its size has changed; with a null one, the panel
+ * shows nothing of it any more. Returns once the UI thread has done it; false if it could not. */
+bool host_set_swap_chain(void* swapChain, int32_t width, int32_t height);
 /* UTF-8, one line; goes to LocalState\revc.log */
 void host_log(const char* text);
 void host_logf(const char* format, ...);

@@ -22,6 +22,9 @@
 using namespace rw;
 using namespace rw::gl3;
 
+extern "C" void W10M_DrawBenchmark(void);      // bench/glbench.cpp
+extern "C" void W10M_Direct3DBenchmark(void);  // bench/d3dbench.cpp
+
 // ===[ The shell's side, for nobody ]===
 
 extern "C" void* host_panel(void) { return nullptr; }
@@ -585,6 +588,13 @@ int main() {
     if (getenv("REVC_TEST_PROGRAMS_KEPT"))
         Check(gl3Caps.programBinaries && numProgramsCompiled == 0 && numProgramsLoaded > 0,
               "every program came from the folder the run before left them in");
+
+    // REVC_BENCH=1: what a draw costs on this PC, through ANGLE and through Direct3D 11 itself
+    // (bench/; a PC's processor and driver, so it is the two tables' difference that says something)
+    if (getenv("REVC_BENCH")) {
+        W10M_DrawBenchmark();
+        W10M_Direct3DBenchmark();
+    }
 
     glfwPollEvents();
     glfwSwapInterval(1);

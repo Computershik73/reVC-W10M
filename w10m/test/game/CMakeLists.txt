@@ -14,7 +14,14 @@ set(ANGLE_LIB_DIR "" CACHE PATH "Directory with ANGLE's x64 libEGL and libGLESv2
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_CXX_STANDARD 14)
+# angle: OpenGL ES through ANGLE. d3d11: the Direct3D 11 renderer (w10m/rwd3d11), drawing into
+# a texture where ANGLE draws into a pbuffer.
+set(REVC_RENDERER "angle" CACHE STRING "angle or d3d11")
 
+if(REVC_RENDERER STREQUAL "d3d11")
+include("${W10M}/cmake/rwd3d11.cmake")
+target_compile_options(librw PRIVATE /w)
+else()
 add_library(glfw STATIC "${W10M}/glfw/glfw_w10m.cpp")
 target_include_directories(glfw PUBLIC "${W10M}/glfw/include" "${ANGLE_INCLUDE_DIR}" PRIVATE "${W10M}/app" "${W10M}/glthread")
 target_link_libraries(glfw PUBLIC "${ANGLE_LIB_DIR}/libEGL.lib" "${ANGLE_LIB_DIR}/libGLESv2.lib")
@@ -30,6 +37,7 @@ target_include_directories(librw INTERFACE "${REVC_ROOT}/vendor/librw")
 target_compile_definitions(librw PUBLIC RW_GL3 PRIVATE LODEPNG_NO_COMPILE_CPP _CRT_SECURE_NO_WARNINGS)
 target_compile_options(librw PRIVATE /w)
 target_link_libraries(librw PUBLIC glfw)
+endif()
 
 add_subdirectory("${W10M}/deps/mpg123" mpg123)
 
@@ -57,13 +65,19 @@ foreach(_header IN LISTS _revc_headers)
 endforeach()
 list(REMOVE_DUPLICATES REVC_INCLUDES)
 
-add_executable(game_test game_test.cpp ${REVC_SOURCES} "${CMAKE_CURRENT_BINARY_DIR}/GitSHA1.cpp")
+add_executable(game_test game_test.cpp ${REVC_SOURCES} "${CMAKE_CURRENT_BINARY_DIR}/GitSHA1.cpp"
+    "${W10M}/bench/d3dbench.cpp")
+if(NOT REVC_RENDERER STREQUAL "d3d11")
+    target_sources(game_test PRIVATE "${W10M}/bench/glbench.cpp")
+endif()
 target_include_directories(game_test PRIVATE "${REVC_ROOT}" ${REVC_INCLUDES} "${W10M}/app")
 target_compile_definitions(game_test PRIVATE
     GTA_W10M LIBRW AUDIO_OAL CMAKE_BUILD CMAKE_NO_AUTOLINK USE_OUR_VERSIONING
     _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
 target_compile_options(game_test PRIVATE /Zc:sizedDealloc- /w /bigobj)
-target_link_libraries(game_test PRIVATE librw OpenAL::OpenAL MPG123::libmpg123)
+target_link_libraries(game_test PRIVATE librw OpenAL::OpenAL MPG123::libmpg123 d3d11.lib d3dcompiler.lib)
+if(NOT REVC_RENDERER STREQUAL "d3d11")
 add_custom_command(TARGET game_test POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${ANGLE_LIB_DIR}/libEGL.dll" "${ANGLE_LIB_DIR}/libGLESv2.dll" "$<TARGET_FILE_DIR:game_test>")
+endif()

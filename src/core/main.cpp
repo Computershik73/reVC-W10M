@@ -1413,22 +1413,13 @@ RenderEffects(void)
 	}
 #endif
 	PUSH_RENDERGROUP("RenderEffects");
-	CGlass::Render();
-	CWaterCannons::Render();
-	CSpecialFX::Render();
-	CRopes::Render();
-	CShadows::RenderStaticShadows();
-	CShadows::RenderStoredShadows();
-	CSkidmarks::Render();
-	CAntennas::Render();
-	CRubbish::Render();
-	CCoronas::Render();
-	CParticle::Render();
-	CPacManPickups::Render();
-	CWeaponEffects::Render();
-	CPointLights::RenderFogEffect();
-	CMovingThings::Render();
-	CRenderer::RenderFirstPersonVehicle();
+	W10M_TIMED("Fx glass, ropes", CGlass::Render(); CWaterCannons::Render(); CSpecialFX::Render(); CRopes::Render());
+	W10M_TIMED("Fx shadows", CShadows::RenderStaticShadows(); CShadows::RenderStoredShadows());
+	W10M_TIMED("Fx marks, rubbish", CSkidmarks::Render(); CAntennas::Render(); CRubbish::Render());
+	W10M_TIMED("Fx coronas", CCoronas::Render());
+	W10M_TIMED("Fx particles", CParticle::Render());
+	W10M_TIMED("Fx the rest", CPacManPickups::Render(); CWeaponEffects::Render(); CPointLights::RenderFogEffect();
+		CMovingThings::Render(); CRenderer::RenderFirstPersonVehicle());
 	POP_RENDERGROUP();
 }
 
@@ -1491,7 +1482,7 @@ Render2dStuff(void)
 		CSceneEdit::Draw();
 	else
 #endif
-		CHud::Draw();
+		W10M_TIMED("Hud", CHud::Draw());
 
 	CSpecialFX::Render2DFXs();
 	CUserDisplay::OnscnTimer.ProcessForDisplay();
@@ -1499,7 +1490,7 @@ Render2dStuff(void)
 	CDarkel::DrawMessages();
 	CGarages::PrintMessages();
 	CPad::PrintErrorMessage();
-	CFont::DrawFonts();
+	W10M_TIMED("Fonts", CFont::DrawFonts());
 #ifndef MASTER
 	COcclusion::Render();
 #endif

@@ -27,11 +27,12 @@ target_compile_definitions(librw PUBLIC RW_GL3 PRIVATE LODEPNG_NO_COMPILE_CPP _C
 target_compile_options(librw PRIVATE /W2 /wd4996 /wd4244 /wd4267 /wd4305 /wd4838)
 target_link_libraries(librw PUBLIC glfw)
 
-add_executable(render_test render_test.cpp)
+# bench/: with REVC_BENCH=1, what a draw costs here through ANGLE and through Direct3D 11 itself
+add_executable(render_test render_test.cpp "${W10M}/bench/glbench.cpp" "${W10M}/bench/d3dbench.cpp")
 # the shader sources, where librw and the game include them from
 target_include_directories(render_test PRIVATE "${W10M}/app" "${W10M}/glthread" "${_librw}/gl" "${REVC_ROOT}/src/extras")
 target_compile_definitions(render_test PRIVATE _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(render_test PRIVATE librw)
+target_link_libraries(render_test PRIVATE librw d3d11.lib d3dcompiler.lib)
 add_custom_command(TARGET render_test POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${ANGLE_LIB_DIR}/libEGL.dll" "${ANGLE_LIB_DIR}/libGLESv2.dll" "$<TARGET_FILE_DIR:render_test>")
