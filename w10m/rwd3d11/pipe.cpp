@@ -37,6 +37,14 @@ namespace gl3 {
 // ===[ Buffers shared between geometries (gl3Caps.sharedBuffers) ]===
 // Free room is kept as two lists of extents, in order and joined where they touch; a page
 // nobody uses is deleted.
+//
+// A page's buffers are dynamic ones, and a geometry's part is written into them where
+// nothing is drawn from (Map with NO_OVERWRITE): the device neither waits nor copies. A part
+// of a buffer that is not dynamic, written with UpdateSubresource, took 12 to 20 ms each time
+// on a Lumia 650 (Direct3D level 9_3) whatever its size: over 20 ms of every frame while
+// driving, when the world's models come and go.
+// So what a geometry leaves is not the next one's at once: a draw of the frame before may
+// still wait to read it. It is free two frames later (takeBackLeft).
 
 struct Extent
 {
@@ -58,6 +66,17 @@ struct Page
 uint32 pageVertices = 65536;
 #define PAGE_INDICES (pageVertices*3)
 static Page *pages;
+
+// what geometries have left, until it is free again
+struct Left
+{
+	Page *page;
+	uint32 firstVertex, numVertices, firstIndex, numIndices;
+	uint32 frame;
+};
+static Left *left;
+static int32 numLeft, maxLeft;
+uint32 frameNumber;	// counted where a frame is shown (device.cpp)
 
 static bool32
 takeExtent(Extent *free, int32 *num, uint32 count, uint32 *start)
@@ -117,18 +136,45 @@ makeBuffer(uint32 size, uint32 bind, const void *data, bool32 rewritten)
 	bd.CPUAccessFlags = rewritten ? D3D11_CPU_ACCESS_WRITE : 0;
 	D3D11_SUBRESOURCE_DATA initial = { data, 0, 0 };
 	ID3D11Buffer *buffer = nil;
+	if(data)
+		d3dPerf.uploadBytes += size;
 	HRESULT hr = d3d.device->CreateBuffer(&bd, data ? &initial : nil, &buffer);
 	if(FAILED(hr))
 		logf("d3d: no buffer of %u bytes, 0x%08X", (unsigned)size, (unsigned)hr);
 	return buffer;
 }
 
-// a part of a buffer that is not rewritten as a whole
+// A part of a page's buffer that nothing is drawn from: its bytes, or (base not nil) 16-bit
+// indices with a number added to each
 static void
-writeBuffer(ID3D11Buffer *buffer, uint32 at, uint32 size, const void *data)
+writeBuffer(ID3D11Buffer *buffer, uint32 at, uint32 size, const void *data, const uint32 *base = nil)
 {
-	D3D11_BOX box = { at, 0, 0, at + size, 1, 1 };
-	d3d.context->UpdateSubresource(buffer, 0, &box, data, 0, 0);
+	if(d3d.threaded){
+		// by the drawing thread, before it makes this frame's calls: a context that only
+		// keeps calls cannot write into a buffer without discarding it
+		d3dPerf.uploadBytes += size;
+		queueBufferWrite(buffer, at, size, data, base);
+		return;
+	}
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	HRESULT hr = d3d.context->Map(buffer, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
+	if(FAILED(hr)){
+		static int said;
+		if(said++ < 4)
+			logf("d3d: a shared buffer could not be written, 0x%08X", (unsigned)hr);
+		return;
+	}
+	d3dPerf.uploadBytes += size;
+	if(base){
+		// written in order, and never read: the memory may be the device's
+		const uint16 *from = (const uint16*)data;
+		uint16 *to = (uint16*)((uint8*)mapped.pData + at);
+		uint32 add = *base;
+		for(uint32 i = 0; i < size/2; i++)
+			to[i] = (uint16)(from[i] + add);
+	}else
+		memcpy((uint8*)mapped.pData + at, data, size);
+	d3d.context->Unmap(buffer, 0);
 }
 
 static Page*
@@ -138,8 +184,8 @@ createPage(InstanceDataHeader *header)
 	memset(p, 0, sizeof(Page));
 	p->format = header->d3dFormat;
 	p->stride = header->attribDesc[0].stride;
-	p->vertices = makeBuffer(pageVertices*p->stride, D3D11_BIND_VERTEX_BUFFER, nil, 0);
-	p->indices = makeBuffer(PAGE_INDICES*2, D3D11_BIND_INDEX_BUFFER, nil, 0);
+	p->vertices = makeBuffer(pageVertices*p->stride, D3D11_BIND_VERTEX_BUFFER, nil, 1);
+	p->indices = makeBuffer(PAGE_INDICES*2, D3D11_BIND_INDEX_BUFFER, nil, 1);
 	if(p->vertices == nil || p->indices == nil){
 		release(p->vertices);
 		release(p->indices);
@@ -161,6 +207,12 @@ destroyPage(Page *p)
 	for(link = &pages; *link != p; link = &(*link)->next)
 		;
 	*link = p->next;
+	// what was left in it is nobody's now
+	int32 kept = 0;
+	for(int32 i = 0; i < numLeft; i++)
+		if(left[i].page != p)
+			left[kept++] = left[i];
+	numLeft = kept;
 	invalidateVertexInput();
 	release(p->indices);
 	release(p->vertices);
@@ -169,12 +221,34 @@ destroyPage(Page *p)
 	rwFree(p);
 }
 
+// What was left two frames ago or earlier is free: no draw that is still to be made reads it.
+// Three with a drawing thread, which is a frame behind.
+static void
+takeBackLeft(void)
+{
+	int32 kept = 0;
+	uint32 frames = d3d.threaded ? 3 : 2;
+	for(int32 i = 0; i < numLeft; i++){
+		Left *l = &left[i];
+		if(frameNumber - l->frame < frames){
+			left[kept++] = *l;
+			continue;
+		}
+		Page *p = l->page;
+		giveExtent(&p->freeVertices, &p->numFreeVertices, &p->maxFreeVertices, l->firstVertex, l->numVertices);
+		giveExtent(&p->freeIndices, &p->numFreeIndices, &p->maxFreeIndices, l->firstIndex, l->numIndices);
+	}
+	numLeft = kept;
+}
+
 static bool32
 enterPage(InstanceDataHeader *header)
 {
 	if(!gl3Caps.sharedBuffers || header->totalNumVertex == 0 || header->totalNumIndex == 0 ||
 	   header->totalNumVertex > pageVertices || header->totalNumIndex > PAGE_INDICES)
 		return 0;
+
+	takeBackLeft();
 
 	Page *p;
 	uint32 firstVertex = 0, firstIndex = 0;
@@ -197,12 +271,8 @@ enterPage(InstanceDataHeader *header)
 	}
 
 	writeBuffer(p->vertices, firstVertex*p->stride, header->totalNumVertex*p->stride, header->vertexBuffer);
-
-	uint16 *moved = rwNewT(uint16, header->totalNumIndex, MEMDUR_FUNCTION | ID_GEOMETRY);
-	for(uint32 i = 0; i < header->totalNumIndex; i++)
-		moved[i] = header->indexBuffer[i] + firstVertex;
-	writeBuffer(p->indices, firstIndex*2, header->totalNumIndex*2, moved);
-	rwFree(moved);
+	// the indices count from the page's first vertex, not from the geometry's
+	writeBuffer(p->indices, firstIndex*2, header->totalNumIndex*2, header->indexBuffer, &firstVertex);
 
 	InstanceData *inst = header->inst;
 	for(uint32 i = 0; i < header->numMeshes; i++, inst++)
@@ -221,10 +291,18 @@ static void
 leavePage(InstanceDataHeader *header)
 {
 	Page *p = (Page*)header->page;
-	giveExtent(&p->freeVertices, &p->numFreeVertices, &p->maxFreeVertices,
-		header->firstVertex, header->totalNumVertex);
-	giveExtent(&p->freeIndices, &p->numFreeIndices, &p->maxFreeIndices,
-		header->firstIndex, header->totalNumIndex);
+	if(numLeft == maxLeft){
+		maxLeft = maxLeft ? maxLeft*2 : 64;
+		left = left ? rwResizeT(Left, left, maxLeft, MEMDUR_EVENT | ID_GEOMETRY)
+		            : rwNewT(Left, maxLeft, MEMDUR_EVENT | ID_GEOMETRY);
+	}
+	Left *l = &left[numLeft++];
+	l->page = p;
+	l->firstVertex = header->firstVertex;
+	l->numVertices = header->totalNumVertex;
+	l->firstIndex = header->firstIndex;
+	l->numIndices = header->totalNumIndex;
+	l->frame = frameNumber;
 	InstanceData *inst = header->inst;
 	for(uint32 i = 0; i < header->numMeshes; i++, inst++)
 		inst->offset -= header->firstIndex*2;
@@ -240,6 +318,7 @@ void
 uploadInstanceData(InstanceDataHeader *header, bool32 reinstance)
 {
 	header->d3dFormat = formatOf(header->attribDesc, header->numAttribs);
+	PerfScope timed(&d3dPerf.uploadNs);
 	if(!reinstance && enterPage(header))
 		return;
 	if(header->page)
@@ -274,6 +353,7 @@ uploadInstanceData(InstanceDataHeader *header, bool32 reinstance)
 		if(SUCCEEDED(d3d.context->Map(vertices, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))){
 			memcpy(mapped.pData, header->vertexBuffer, size);
 			d3d.context->Unmap(vertices, 0);
+			d3dPerf.uploadBytes += size;
 		}
 	}
 }
@@ -399,10 +479,15 @@ instance(rw::ObjPipeline *rwpipe, Atomic *atomic)
 
 	// no instance or complete reinstance
 	if(geo->instData == nil){
+		PerfScope timed(&d3dPerf.instanceNs);
 		geo->instData = instanceMesh(rwpipe, geo);
 		pipe->instanceCB(geo, (InstanceDataHeader*)geo->instData, 0);
-	}else if(geo->lockedSinceInst)
+		d3dPerf.instances++;
+	}else if(geo->lockedSinceInst){
+		PerfScope timed(&d3dPerf.instanceNs);
 		pipe->instanceCB(geo, (InstanceDataHeader*)geo->instData, 1);
+		d3dPerf.reinstances++;
+	}
 
 	geo->lockedSinceInst = 0;
 }
@@ -418,6 +503,7 @@ render(rw::ObjPipeline *rwpipe, Atomic *atomic)
 {
 	ObjPipeline *pipe = (ObjPipeline*)rwpipe;
 	Geometry *geo = atomic->geometry;
+	PerfScope timed(&d3dPerf.renderNs);
 	pipe->instance(atomic);
 	assert(geo->instData != nil);
 	assert(geo->instData->platform == PLATFORM_GL3);
@@ -497,6 +583,139 @@ findAttrib(AttribDesc *attribs, uint32 index)
 	return a;
 }
 
+// ===[ Atlases without wrapping in the pixel shader (REVC_ATLAS=fit) ]===
+// A mesh drawn from an atlas has its texture coordinates wrapped inside its texture's part of
+// the atlas by the pixel shader, which a GPU of Direct3D's level 9 pays for at every pixel: a
+// Lumia 650 draws a picture's worth of pixels that way in 5.2 ms and from a texture of its
+// own in 3.1 (bench/d3dbench.cpp, REVC_BENCH=fill), and a texture of its own can have its
+// smaller copies. But most meshes of a building do not repeat their texture at all. So this
+// way only those are drawn from an atlas, with their coordinates moved into their texture's
+// part of it here, once, and by the same shaders as everything else; a mesh that does repeat
+// its texture is drawn from that texture, by itself, as without atlases.
+static int32 atlasFit = -1;
+
+bool32
+atlasesFit(void)
+{
+	if(atlasFit < 0){
+		const char *value = getenv("REVC_ATLAS");
+		atlasFit = value != nil && strcmp(value, "fit") == 0;
+	}
+	return atlasFit;
+}
+
+struct MeshFit
+{
+	bool32 fits;
+	float cellU, cellV;	// the whole numbers its coordinates lie above, as they are sampled (u, 1-v)
+};
+
+// The meshes whose textures are in an atlas and whose coordinates lie within one repeat of
+// the texture: their vertices' coordinates become the atlas's. The others are not drawn from
+// an atlas. The vertices are in the buffer already.
+static void
+fitIntoAtlases(InstanceDataHeader *header)
+{
+	InstanceData *inst = header->inst;
+	uint32 n = header->numMeshes, i, k;
+	AttribDesc *a = findAttrib(header->attribDesc, ATTRIB_TEXCOORDS0);
+	uint8 *coords = header->vertexBuffer + a->offset;
+	uint32 stride = a->stride;
+
+	header->numAtlased = 0;
+	MeshFit *fit = rwNewT(MeshFit, n, MEMDUR_FUNCTION | ID_GEOMETRY);
+	bool32 any = 0;
+	for(i = 0; i < n; i++){
+		fit[i].fits = 0;
+		inst[i].atlas = inst[i].atlasFor = nil;
+		Texture *tex = inst[i].material->texture;
+		if(tex == nil || tex->raster == nil || inst[i].numIndex == 0)
+			continue;
+		Gl3Raster *natras = GETGL3RASTEREXT(tex->raster);
+		if(natras->atlas == nil)
+			continue;
+		float minU = 1e30f, maxU = -1e30f, minV = 1e30f, maxV = -1e30f;
+		uint16 *index = (uint16*)((uint8*)header->indexBuffer + inst[i].offset);
+		for(k = 0; k < inst[i].numIndex; k++){
+			float uv[2];
+			memcpy(uv, coords + index[k]*stride, 8);
+			float u = uv[0], v = 1.0f - uv[1];
+			if(u < minU) minU = u;
+			if(u > maxU) maxU = u;
+			if(v < minV) minV = v;
+			if(v > maxV) maxV = v;
+		}
+		// two texels over the edge are there in the atlas (the texture's far side again)
+		float tolU = 2.0f/tex->raster->width, tolV = 2.0f/tex->raster->height;
+		fit[i].cellU = floorf(minU + tolU);
+		fit[i].cellV = floorf(minV + tolV);
+		if(minU < fit[i].cellU - tolU || maxU > fit[i].cellU + 1.0f + tolU ||
+		   minV < fit[i].cellV - tolV || maxV > fit[i].cellV + 1.0f + tolV)
+			continue;
+		fit[i].fits = 1;
+		inst[i].atlasFor = tex;
+		any = 1;
+	}
+	if(any){
+		// A vertex two meshes use can have one pair of coordinates: the two have to agree,
+		// or neither is drawn from an atlas (and then those that agreed with either)
+		int32 *first = rwNewT(int32, header->totalNumVertex, MEMDUR_FUNCTION | ID_GEOMETRY);
+		bool32 changed;
+		do{
+			changed = 0;
+			for(k = 0; k < header->totalNumVertex; k++)
+				first[k] = -1;
+			for(i = 0; i < n; i++){
+				uint16 *index = (uint16*)((uint8*)header->indexBuffer + inst[i].offset);
+				for(k = 0; k < inst[i].numIndex; k++){
+					int32 j = first[index[k]];
+					if(j < 0){
+						first[index[k]] = i;
+						continue;
+					}
+					if((uint32)j == i || (!fit[i].fits && !fit[j].fits))
+						continue;
+					if(fit[i].fits && fit[j].fits && inst[i].atlasFor == inst[j].atlasFor &&
+					   fit[i].cellU == fit[j].cellU && fit[i].cellV == fit[j].cellV)
+						continue;
+					fit[i].fits = fit[j].fits = 0;
+					changed = 1;
+				}
+			}
+		}while(changed);
+
+		uint8 *done = rwNewT(uint8, header->totalNumVertex, MEMDUR_FUNCTION | ID_GEOMETRY);
+		memset(done, 0, header->totalNumVertex);
+		for(i = 0; i < n; i++){
+			if(!fit[i].fits){
+				inst[i].atlasFor = nil;
+				continue;
+			}
+			Gl3Raster *natras = GETGL3RASTEREXT(inst[i].atlasFor->raster);
+			inst[i].atlas = natras->atlas;
+			header->numAtlased++;
+			uint16 *index = (uint16*)((uint8*)header->indexBuffer + inst[i].offset);
+			for(k = 0; k < inst[i].numIndex; k++){
+				uint32 v = index[k];
+				if(done[v])
+					continue;
+				done[v] = 1;
+				float uv[2];
+				memcpy(uv, coords + v*stride, 8);
+				// as it is sampled: (u, 1-v), into the texture's part of the atlas
+				float su = natras->atlasRect[0] + (uv[0] - fit[i].cellU)*natras->atlasRect[2];
+				float sv = natras->atlasRect[1] + ((1.0f - uv[1]) - fit[i].cellV)*natras->atlasRect[3];
+				uv[0] = su;
+				uv[1] = 1.0f - sv;
+				memcpy(coords + v*stride, uv, 8);
+			}
+		}
+		rwFree(done);
+		rwFree(first);
+	}
+	rwFree(fit);
+}
+
 // A geometry's vertices as they are drawn. flags: INSTANCE_ATLAS, with where each vertex's
 // texture is in an atlas (where there are atlases); INSTANCE_SKIN, with normals whether it has
 // them or not, its bones' weights and their indices.
@@ -515,7 +734,7 @@ instanceVertices(Geometry *geo, InstanceDataHeader *header, bool32 reinstance, u
 	if(!reinstance){
 		AttribDesc tmpAttribs[14];
 		uint32 stride;
-		header->atlasInput = (flags & INSTANCE_ATLAS) && gl3Caps.atlases && geo->numTexCoordSets > 0;
+		header->atlasInput = (flags & INSTANCE_ATLAS) && gl3Caps.atlases && geo->numTexCoordSets > 0 && !atlasesFit();
 		int32 *atlasOwner = header->atlasInput ? findAtlases(header) : nil;
 
 		//
@@ -682,6 +901,18 @@ instanceVertices(Geometry *geo, InstanceDataHeader *header, bool32 reinstance, u
 			instTexCoords(VERT_FLOAT2, verts + a->offset,
 				geo->texCoords[n],
 				header->totalNumVertex, a->stride);
+		}
+	}
+
+	// REVC_ATLAS=fit: the meshes that do not repeat their texture get the atlas's coordinates.
+	// Vertices instanced again have the geometry's own: nothing of it is drawn from an atlas then.
+	if((flags & INSTANCE_ATLAS) && gl3Caps.atlases && geo->numTexCoordSets > 0 && atlasesFit()){
+		if(!reinstance)
+			fitIntoAtlases(header);
+		else if(geo->lockedSinceInst & Geometry::LOCKTEXCOORDS){
+			for(uint32 i = 0; i < header->numMeshes; i++)
+				header->inst[i].atlas = header->inst[i].atlasFor = nil;
+			header->numAtlased = 0;
 		}
 	}
 

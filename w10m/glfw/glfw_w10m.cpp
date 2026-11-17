@@ -51,6 +51,7 @@ extern "C" __declspec(dllimport) void angle_uwp_set_panel_size(int32_t width, in
 // (HOST_CONTEXT_*) comes back. The second: from now on a cutscene is skipped as it starts.
 extern "C" int32_t reVC_W10M_Frame(void);
 extern "C" void reVC_W10M_SkipCutscenes(void);
+extern "C" void reVC_W10M_DriveItself(void);
 
 struct GLFWmonitor {
     GLFWvidmode mode;
@@ -406,7 +407,30 @@ void SaveFrame(GLFWwindow* window, int frame) {
             if (!gl.readPixels || !gl.getIntegerv || !gl.bindFramebuffer || !host_local_folder()) every = 0;
 #endif
             host_logf("glfw: REVC_FRAMESHOT, %s every %.1f s", keep ? "a frame_NNN.bmp" : "frame.bmp", every);
+            // A series begins with none of the one before it: a run that was cut short leaves
+            // its frames, and the Device Portal takes them away one request at a time
+            if (every && keep) {
+                std::wstring folder = host_local_folder();
+                WIN32_FIND_DATAW found;
+                HANDLE find = FindFirstFileExW((folder + L"\\frame_*.bmp").c_str(), FindExInfoBasic, &found,
+                                               FindExSearchNameMatch, nullptr, 0);
+                int removed = 0;
+                if (find != INVALID_HANDLE_VALUE) {
+                    do {
+                        if (DeleteFileW((folder + L"\\" + found.cFileName).c_str())) removed++;
+                    } while (FindNextFileW(find, &found));
+                    FindClose(find);
+                }
+                if (removed) host_logf("glfw: %d frames of an earlier series removed", removed);
+            }
         }
+    }
+    // a series ends by itself: the setting left on a phone that is then played on for hours
+    // filled a gigabyte with frames
+    const int kSeries = 900;
+    if (keep && kept >= kSeries) {
+        if (every) host_logf("glfw: REVC_FRAMESHOT, the series ends at %d frames", kSeries);
+        every = 0;
     }
     if (!every || (last && SecondsSince(last) < every)) return;
     last = Ticks();
@@ -436,6 +460,9 @@ void SaveFrame(GLFWwindow* window, int frame) {
 #endif
     // a BMP's rows go bottom to top, as OpenGL's do
     int step = keep ? (w + 319) / 320 : (w + 639) / 640;  // a series is of small pictures
+    // REVC_FRAMESHOT_FULL=1: every pixel of the picture, to look at what a small one hides
+    static const bool full = getenv("REVC_FRAMESHOT_FULL") != nullptr;
+    if (full) step = 1;
     int outW = w / step, outH = h / step;
     int stride = (outW * 3 + 3) & ~3;
     std::vector<unsigned char> file(54 + (size_t)stride * outH);
@@ -481,9 +508,12 @@ void SaveFrame(GLFWwindow* window, int frame) {
 // later poll, as a finger's would. s: from then on a cutscene is skipped as it starts. The
 // clock starts with the menu because what comes before it takes six seconds on one phone and
 // eighty on another. 87@30-50: the key (W, the accelerator of the game's PC keys) is held
-// from 30 to 50, which is how a run drives itself: 65 and 68 (A, D) steer, 83 (S) brakes.
+// from 30 to 50: 65 and 68 (A, D) steer, 83 (S) brakes. d@30: from then on the player's car is
+// driven as the traffic's cars are, and where he has none he is put into the nearest, which
+// is how a run drives itself (keys held by the clock end in a wall as soon as the game is a
+// little quicker or slower than where they were timed).
 struct ScriptedKey {
-    int vk;  // 0: skip the cutscenes
+    int vk;  // 0: skip the cutscenes; -1: the car drives itself
     double at;
     double until;  // when it comes up again
     int state;  // 0: to come, 1: down, 2: done
@@ -497,7 +527,8 @@ void LoadScript() {
     while (text && *text) {
         char* end = nullptr;
         long vk = 0;
-        if (*text == 's') {
+        if (*text == 's' || *text == 'd') {
+            vk = *text == 's' ? 0 : -1;
             end = const_cast<char*>(text) + 1;
         } else {
             vk = strtol(text, &end, 10);
@@ -526,6 +557,12 @@ void StepScript(GLFWwindow* window, int32_t context) {
         if (key.vk == 0) {
             host_log("glfw: scripted: cutscenes are skipped from here on");
             reVC_W10M_SkipCutscenes();
+            key.state = 2;
+            continue;
+        }
+        if (key.vk < 0) {
+            host_log("glfw: scripted: the player's car drives itself from here on");
+            reVC_W10M_DriveItself();
             key.state = 2;
             continue;
         }

@@ -56,10 +56,23 @@ cbuffer Lights
 
 // The lights after the last one have a type of nought (the renderer sees to it): there is no
 // leaving the loop early in a shader of this level, each light counts or does not.
+//
+// Directional lights alone (the game has no others: the sun and what stands for the lamps
+// near a car) are little enough arithmetic to be laid out light by light. The loop, with a
+// point light's and a spot light's arithmetic in it for every light, is fifteen times the
+// vertex shader's work on a GPU of Direct3D's level 9 (a Lumia 650: 21 ms for a hundred
+// thousand small triangles against 1.4, bench/d3dbench.cpp), which a street's cars and
+// people were drawn with. The renderer uses the shader with all three kinds only when a
+// light of the other two kinds is there (shader.cpp).
 float3 DoDynamicLight(float3 V, float3 N)
 {
 	float3 color = float3(0.0, 0.0, 0.0);
-#if defined(DIRECTIONALS) || defined(POINTLIGHTS) || defined(SPOTLIGHTS)
+#if defined(DIRECTIONALS) && !defined(POINTLIGHTS) && !defined(SPOTLIGHTS)
+	[unroll] for(int i = 0; i < MAX_LIGHTS; i++){
+		float l = max(0.0, dot(N, -u_lightDirection[i].xyz));
+		color += (u_lightParams[i].x == 1.0 ? l : 0.0)*u_lightColor[i].rgb;
+	}
+#elif defined(DIRECTIONALS) || defined(POINTLIGHTS) || defined(SPOTLIGHTS)
 	[loop] for(int i = 0; i < MAX_LIGHTS; i++){
 		float type = u_lightParams[i].x;
 #ifdef DIRECTIONALS

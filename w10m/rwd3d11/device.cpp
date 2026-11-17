@@ -124,6 +124,7 @@ int32 u_surfProps;
 Shader *defaultShader, *defaultShader_noAT;
 Shader *defaultShader_fullLight, *defaultShader_fullLight_noAT;
 Shader *atlasShader, *atlasShader_fullLight;
+Shader *atlasShader_noAT, *atlasShader_fullLight_noAT;
 
 struct RwRasterStateCache {
 	Raster *raster;
@@ -210,6 +211,17 @@ static ID3D11SamplerState *boundSampler[MAXNUMSTAGES];
 static uint32 stageDirty;	// a bit for each texture stage whose raster or sampling changed
 static ID3D11RenderTargetView *boundTarget;
 static ID3D11DepthStencilView *boundDepth;
+// when the first camera of the frame was begun or cleared: 0 between frames
+static uint64 frameBegan;
+// the camera between its beginUpdate and its endUpdate
+static Camera *updatingCamera;
+// The picture (the back buffer) in this frame: whether a camera has cleared it or begun to
+// draw into it, and the depth buffer it is drawn with
+static bool32 pictureBegun;
+static ID3D11DepthStencilView *pictureDepth;
+// REVC_D3D_INTERVAL: -1 if it is not set
+static int32 forcedInterval = -1;
+uint32 showsCounted, showsAtOnceCounted;
 
 static ID3D11BlendState *blendStates[2][12][12];
 static ID3D11RasterizerState *rasterStates[3][2];
@@ -282,6 +294,8 @@ getDepthState(void)
 	d.DepthEnable = curState.depthTest ? TRUE : FALSE;
 	d.DepthWriteMask = curState.depthMask ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
 	d.DepthFunc = curState.depthAlways ? D3D11_COMPARISON_ALWAYS : D3D11_COMPARISON_LESS_EQUAL;
+	if(measure.pixels == 2)	// every pixel a triangle covers is counted, hidden or not
+		d.DepthFunc = D3D11_COMPARISON_ALWAYS;
 	d.StencilEnable = curState.stencilEnable ? TRUE : FALSE;
 	d.StencilReadMask = curState.stencilEnable ? (UINT8)curState.stencilMask : 0xFF;
 	d.StencilWriteMask = curState.stencilEnable ? (UINT8)curState.stencilWriteMask : 0xFF;
@@ -315,7 +329,8 @@ getRasterState(void)
 	if(flipTarget && cull != CULLNONE)
 		cull = cull == CULLBACK ? (uint32)CULLFRONT : (uint32)CULLBACK;
 	int32 index = cull == CULLBACK ? 1 : cull == CULLFRONT ? 2 : 0;
-	ID3D11RasterizerState **state = &rasterStates[index][curState.scissor ? 1 : 0];
+	bool32 scissor = curState.scissor || measure.scissor;
+	ID3D11RasterizerState **state = &rasterStates[index][scissor ? 1 : 0];
 	if(*state == nil){
 		D3D11_RASTERIZER_DESC d;
 		memset(&d, 0, sizeof(d));
@@ -323,7 +338,7 @@ getRasterState(void)
 		d.CullMode = index == 1 ? D3D11_CULL_BACK : index == 2 ? D3D11_CULL_FRONT : D3D11_CULL_NONE;
 		d.FrontCounterClockwise = TRUE;	// as OpenGL has it
 		d.DepthClipEnable = TRUE;
-		d.ScissorEnable = curState.scissor ? TRUE : FALSE;
+		d.ScissorEnable = scissor ? TRUE : FALSE;
 		HRESULT hr = d3d.device->CreateRasterizerState(&d, state);
 		if(FAILED(hr))
 			logf("d3d: no rasterizer state %d, 0x%08X", (int)index, (unsigned)hr);
@@ -399,6 +414,7 @@ invalidateStates(void)
 	}
 	boundTarget = nil;
 	boundDepth = nil;
+	pictureDepth = nil;
 	glGlobals.presentWidth = glGlobals.presentHeight = 0;
 	invalidateVertexInput();
 }
@@ -435,12 +451,21 @@ flushStates(void)
 			RwRasterStateCache *stage = &rwStateCache.texstage[i];
 			ID3D11ShaderResourceView *resource = whiteTexture;
 			uint32 addressU = stage->addressingU, addressV = stage->addressingV;
+			uint32 filter = stage->filter;
 			if(stage->raster){
 				Gl3Raster *natras = PLUGINOFFSET(Gl3Raster, stage->raster, nativeRasterOffset);
 				if(natras->d3dResource)
 					resource = (ID3D11ShaderResourceView*)natras->d3dResource;
 				if(natras->d3dClamp)
 					addressU = addressV = Texture::CLAMP;
+				// the levels below its first were made here (raster.cpp): they are for
+				// sampling, whatever the game asked of a texture it knows to have one level
+				if(natras->autogenMipmap){
+					if(filter == Texture::LINEAR)
+						filter = Texture::LINEARMIPLINEAR;
+					else if(filter == Texture::NEAREST)
+						filter = Texture::MIPNEAREST;
+				}
 			}
 			if(resource != boundResource[i]){
 				boundResource[i] = resource;
@@ -456,7 +481,7 @@ flushStates(void)
 					}
 				}
 			}
-			ID3D11SamplerState *sampler = getSamplerState(stage->filter, addressU, addressV);
+			ID3D11SamplerState *sampler = getSamplerState(filter, addressU, addressV);
 			if(sampler != boundSampler[i]){
 				boundSampler[i] = sampler;
 				d3d.context->PSSetSamplers(i, 1, &sampler);
@@ -627,6 +652,24 @@ evictRaster(Raster *raster)
 			d3d.context->PSSetShaderResources(i, 1, &whiteTexture);
 		}
 	}
+}
+
+void
+getTextureStage(TextureStage *stage)
+{
+	stage->raster = rwStateCache.texstage[0].raster;
+	stage->addressU = rwStateCache.texstage[0].addressingU;
+	stage->addressV = rwStateCache.texstage[0].addressingV;
+	stage->filter = rwStateCache.texstage[0].filter;
+}
+
+void
+setTextureStage(const TextureStage *stage)
+{
+	setRasterStage(0, stage->raster);
+	setFilterMode(0, stage->filter);
+	setAddressU(0, stage->addressU);
+	setAddressV(0, stage->addressV);
 }
 
 void
@@ -1010,6 +1053,8 @@ setLights(WorldLights *lightData)
 	// the shaders go through all eight: those that are not there are of no type
 	for(; n < MAX_LIGHTS; n++)
 		uniformObject.lightParams[n].type = 0.0f;
+	// which a shader that knows directional lights alone will do (shader.cpp)
+	onlyDirectionals = (bits & (VSLIGHT_POINT | VSLIGHT_SPOT)) == 0;
 
 	setUniform(u_ambLight, &uniformObject.ambLight);
 	// which lights there are, always: a shader that counts lights may draw what has none.
@@ -1182,6 +1227,8 @@ setFrameBuffer(Camera *cam)
 		boundDepth = depth;
 		d3d.context->OMSetRenderTargets(1, &target, depth);
 	}
+	if(fbuf->type == Raster::CAMERA)
+		pictureDepth = depth;
 }
 
 static Rect
@@ -1226,7 +1273,21 @@ setViewport(Raster *frameBuffer)
 		viewport.Height = (float)r.h;
 		viewport.MinDepth = 0.0f;
 		viewport.MaxDepth = 1.0f;
+		// measure.cpp: the picture into a part of its target, or a part of it only
+		bool32 picture = frameBuffer->parent->type == Raster::CAMERA;
+		if(measure.viewport && picture){
+			viewport.Width = (float)(r.w*measure.viewport/100);
+			viewport.Height = (float)(r.h*measure.viewport/100);
+		}
 		d3d.context->RSSetViewports(1, &viewport);
+		if(measure.scissor){
+			D3D11_RECT all = { r.x, r.y, r.x + r.w, r.y + r.h };
+			if(picture){
+				all.right = r.x + (r.w*measure.scissor + 99)/100;
+				all.bottom = r.y + (r.h*measure.scissor + 99)/100;
+			}
+			d3d.context->RSSetScissorRects(1, &all);
+		}
 		glGlobals.presentWidth = r.w;
 		glGlobals.presentHeight = r.h;
 		glGlobals.presentOffX = r.x;
@@ -1238,6 +1299,9 @@ static void
 beginUpdate(Camera *cam)
 {
 	float view[16], proj[16];
+	PerfScope timed(&d3dPerf.cameraNs);
+	if(frameBegan == 0)
+		frameBegan = perfNow();
 	// View Matrix
 	Matrix inv;
 	Matrix::invert(&inv, cam->getFrame()->getLTM());
@@ -1310,18 +1374,41 @@ beginUpdate(Camera *cam)
 	setProjectionMatrix(proj);
 
 	setViewport(cam->frameBuffer);
+	updatingCamera = cam;
+	if(cam->frameBuffer->parent->type == Raster::CAMERA)
+		pictureBegun = 1;
 }
 
 static void
 endUpdate(Camera *cam)
 {
+	drawLater();
+	updatingCamera = nil;
+}
+
+void
+deviceStateLost(void)
+{
+	invalidateStates();
+	memset(&oldState, 0xFE, sizeof(oldState));
+	forgetShaderBindings();
+	freshStreams();
+	freshInstances();
+	if(updatingCamera){
+		setFrameBuffer(updatingCamera);
+		setViewport(updatingCamera->frameBuffer);
+	}
 }
 
 static void
 clearCamera(Camera *cam, RGBA *col, uint32 mode)
 {
 	RGBAf colf;
+	PerfScope timed(&d3dPerf.cameraNs);
+	if(frameBegan == 0)
+		frameBegan = perfNow();
 
+	drawLater();
 	setFrameBuffer(cam);
 
 	convColor(&colf, col);
@@ -1337,7 +1424,17 @@ clearCamera(Camera *cam, RGBA *col, uint32 mode)
 			}
 		}else
 			d3d.context->ClearRenderTargetView(boundTarget, (float*)&colf);
+	}else if(d3d.discards && !pictureBegun && !part && boundTarget && boundTarget == d3d.backBufferTarget &&
+	         (mode & Camera::CLEARZ)){
+		// The game does not clear the picture, only its depth: the sky covers it. A GPU that
+		// draws in tiles (a phone's) then fetches for every tile what the buffer had, which
+		// is the frame of three frames ago and of no use to anybody. Cleared, there is
+		// nothing to fetch.
+		static const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		d3d.context->ClearRenderTargetView(boundTarget, black);
 	}
+	if(cam->frameBuffer->parent->type == Raster::CAMERA)
+		pictureBegun = 1;
 	uint32 flags = 0;
 	if(mode & Camera::CLEARZ)
 		flags |= D3D11_CLEAR_DEPTH;
@@ -1370,6 +1467,9 @@ copyBackBuffer(Raster *dst, int32 x, int32 y)
 	ID3D11RenderTargetView *target = (ID3D11RenderTargetView*)natdst->d3dTarget;
 	if(target == nil || d3d.backBuffer == nil)
 		return 0;
+	PerfScope timed(&d3dPerf.copyNs);
+	d3dPerf.copies++;
+	drawLater();
 	ID3D11ShaderResourceView *source = d3d.backBufferResource;
 	if(source == nil){
 		if(copySource == nil){
@@ -1575,7 +1675,14 @@ makeSwapChain(void)
 		sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 		sd.SampleDesc.Count = 1;
 		sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
-		sd.BufferCount = 2;
+		// Two buffers where frames wait for the vertical blank and are held in step with the
+		// screen by it; one more on a level-9 GPU, whose frames mostly do not wait (see
+		// rwd3d11_show): a Lumia 650 standing in a street had 27 to 29 frames a second with
+		// three and 25 to 26 with two. REVC_D3D_BUFFERS=2 to 4 says otherwise.
+		sd.BufferCount = d3d.level < D3D_FEATURE_LEVEL_10_0 ? 3 : 2;
+		if(const char *value = getenv("REVC_D3D_BUFFERS"))
+			if(atoi(value) >= 2 && atoi(value) <= 4)
+				sd.BufferCount = atoi(value);
 		sd.Scaling = DXGI_SCALING_STRETCH;
 		sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
 		// what the game leaves in the back buffer's alpha is not coverage
@@ -1586,6 +1693,9 @@ makeSwapChain(void)
 			sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 			hr = factory->CreateSwapChainForComposition(d3d.device, &sd, nil, &d3d.swapChain);
 		}
+		if(SUCCEEDED(hr))
+			logf("d3d: a swap chain of %d buffers, %s", (int)sd.BufferCount,
+				sd.BufferUsage & DXGI_USAGE_SHADER_INPUT ? "which can be sampled" : "which cannot be sampled");
 	}
 	release(factory);
 	release(adapter);
@@ -1645,6 +1755,15 @@ startDirect3D(void)
 		return 0;
 	}
 
+	d3d.immediate = d3d.context;
+	d3d.threaded = 0;
+	// REVC_D3D_KEEP=1: the GPU is not told what it need not keep (the picture before a frame,
+	// the depth buffer after it), to see what that is worth
+	d3d.discards = getenv("REVC_D3D_KEEP") == nil;
+	d3d.immediate1 = nil;
+	if(FAILED(d3d.context->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&d3d.immediate1)))
+		d3d.immediate1 = nil;
+
 	glfwGetFramebufferSize(glGlobals.window, &d3d.width, &d3d.height);
 	if(host_panel()){
 		if(!makeSwapChain())
@@ -1654,19 +1773,41 @@ startDirect3D(void)
 		return 0;
 	logf("d3d: Direct3D 11 at feature level %s, %dx%d %s", levelName(d3d.level), (int)d3d.width, (int)d3d.height,
 		d3d.swapChain ? "in the panel" : "into a texture (no panel)");
+
+	if(const char *value = getenv("REVC_D3D_INTERVAL")){
+		forcedInterval = atoi(value);
+		logf("d3d: REVC_D3D_INTERVAL, frames are shown with interval %d", (int)forcedInterval);
+	}
+
+	openMeasure();
+
+	// A drawing thread (thread.cpp) where the calls are what a frame costs: a GPU of level 9.
+	// On a faster one keeping the calls costs more than making them (an HP Elite x3: 7 to 25
+	// microseconds a draw to keep, 3 to 4 to make). REVC_D3D_THREAD=1 or 0 says otherwise.
+	bool32 thread = d3d.level < D3D_FEATURE_LEVEL_10_0;
+	if(const char *value = getenv("REVC_D3D_THREAD"))
+		thread = atoi(value) != 0;
+	if(measure.pixels)	// the counts are read where they are asked for
+		thread = 0;
+	if(thread && startDrawingThread())
+		logf("d3d: a drawing thread makes Direct3D's calls; the game's thread keeps them for it");
 	return 1;
 }
 
 static int
 stopDirect3D(void)
 {
+	stopDrawingThread();
+	closeMeasure();
 	if(d3d.context)
 		d3d.context->ClearState();
 	releaseBackBuffer();
 	if(d3d.swapChain)
 		host_set_swap_chain(nil, 0, 0);
 	release(d3d.swapChain);
+	release(d3d.immediate1);
 	release(d3d.context);
+	d3d.immediate = nil;
 	release(d3d.device);
 	return 1;
 }
@@ -1811,6 +1952,32 @@ initDirect3D(void)
 		pageVertices = n < 1024 ? 1024 : n > 65536 ? 65536 : n;
 	}
 
+	// What differs between the draws of geometry (where an object is, its light, its
+	// material) with the vertices, not as constants, where changed constants are what a draw
+	// costs: a GPU of level 9 (render.cpp). On the others it gains nothing (an Elite x3: the
+	// same frames a second with it and without). REVC_D3D_INSTANCE=0 or 1 says otherwise.
+	// Before the first shader is made: a shader knows then whether it has that form.
+	instancing = d3d.level < D3D_FEATURE_LEVEL_10_0;
+	if(const char *value = getenv("REVC_D3D_INSTANCE"))
+		instancing = atoi(value) != 0;
+	if(instancing && !openInstances())
+		instancing = 0;
+	if(instancing)
+		logf("d3d: what differs between the draws of geometry goes with their vertices, not as constants");
+	// And there, what may be seen through is drawn after what may not (render.cpp).
+	// Package 1.0.1117.702 did that on every GPU. Above level 9, where the opaque meshes
+	// have the shaders without the alpha test anyway (chosen mesh by mesh) and only the
+	// order would be new, it was not shown to be worth anything: an Elite x3, warm, at
+	// 1920x1080 had 23.4 frames a second with it and 23.2 without, in the one pair of runs
+	// the phone was equally fast for. So it is a level-9 GPU's again.
+	// REVC_D3D_LATER=0: everything in the game's order. REVC_D3D_LATER=1 with
+	// REVC_D3D_INSTANCE=1 gives it to a GPU above level 9.
+	opaqueFirst = instancing && d3d.level < D3D_FEATURE_LEVEL_10_0;
+	if(const char *value = getenv("REVC_D3D_LATER"))
+		opaqueFirst = instancing && atoi(value) != 0;
+	if(opaqueFirst)
+		logf("d3d: what may be seen through is drawn after what may not, which has shaders without the alpha test");
+
 	u_alphaRef = registerUniform("u_alphaRef", UNIFORM_VEC4);
 	u_fogData = registerUniform("u_fogData", UNIFORM_VEC4);
 	u_fogColor = registerUniform("u_fogColor", UNIFORM_VEC4);
@@ -1845,8 +2012,11 @@ initDirect3D(void)
 		assert(atlasShader);
 		atlasShader_fullLight = Shader::create("default_atlas_fullLight", "atlas");
 		assert(atlasShader_fullLight);
+		atlasShader_noAT = Shader::create("default_atlas", "atlas_noAT");
+		assert(atlasShader_noAT);
+		atlasShader_fullLight_noAT = Shader::create("default_atlas_fullLight", "atlas_noAT");
+		assert(atlasShader_fullLight_noAT);
 	}
-
 	openIm2D();
 	openIm3D();
 
@@ -1859,6 +2029,7 @@ termDirect3D(void)
 	closeIm3D();
 	closeIm2D();
 
+	closeInstances();
 	defaultShader->destroy();
 	defaultShader = nil;
 	defaultShader_noAT->destroy();
@@ -1872,6 +2043,10 @@ termDirect3D(void)
 		atlasShader = nil;
 		atlasShader_fullLight->destroy();
 		atlasShader_fullLight = nil;
+		atlasShader_noAT->destroy();
+		atlasShader_noAT = nil;
+		atlasShader_fullLight_noAT->destroy();
+		atlasShader_fullLight_noAT = nil;
 	}
 
 	closeRasters();
@@ -1963,6 +2138,38 @@ deviceSystemGLFW(DeviceReq req, void *arg, int32 n)
 	return 1;
 }
 
+// The game asks for the next vertical blank. Waiting for it costs up to a sixtieth of a
+// second, which a frame has to spare only where it is drawn quickly: the game holds itself to
+// 30 frames a second, and what is left of a thirtieth after its own work and the drawing is
+// what the wait may take. A Lumia 650 driving, where the drawing alone is 25 ms, had 18 frames
+// a second with the wait and 24 without. So a frame that took long (late: over 12 ms from its
+// first camera to its end; with a drawing thread, see there) is shown at once, and only the
+// quicker ones wait: the menus, a fast phone, where the wait is what keeps the frames in step
+// with the screen. Nothing tears: the panel's swap chain is composed, not scanned out.
+// REVC_D3D_INTERVAL=0 or 1: always the one or the other.
+void
+presentFrame(int32 interval, bool32 late)
+{
+	if(d3d.swapChain == nil){
+		d3d.immediate->Flush();
+		return;
+	}
+	if(forcedInterval >= 0)
+		interval = forcedInterval;
+	else if(late)
+		interval = 0;
+	showsCounted++;
+	if(interval <= 0)
+		showsAtOnceCounted++;
+	HRESULT hr = d3d.swapChain->Present(interval > 0 ? 1 : 0, 0);
+	if(FAILED(hr)){
+		static int said;
+		if(said++ < 4)
+			logf("d3d: the frame was not shown, 0x%08X; the device says 0x%08X", (unsigned)hr,
+				(unsigned)d3d.device->GetDeviceRemovedReason());
+	}
+}
+
 Device renderdevice = {
 	0.0f, 1.0f,
 	gl3::beginUpdate,
@@ -1994,19 +2201,66 @@ using namespace rw::gl3;
 extern "C" void
 rwd3d11_show(int interval)
 {
-	if(d3d.swapChain){
-		HRESULT hr = d3d.swapChain->Present(interval > 0 ? 1 : 0, 0);
-		if(FAILED(hr)){
-			static int said;
-			if(said++ < 4)
-				logf("d3d: the frame was not shown, 0x%08X; the device says 0x%08X", (unsigned)hr,
-					(unsigned)d3d.device->GetDeviceRemovedReason());
-		}
-		// a swap chain that flips takes its buffer off the device when it shows it
-		boundTarget = nil;
-		boundDepth = nil;
-	}else if(d3d.context)
-		d3d.context->Flush();
+	PerfScope timed(&d3dPerf.showNs);
+	frameNumber++;
+	if(d3d.context == nil)
+		return;
+	bool32 late = frameBegan && perfNow() - frameBegan > 12000000ull;
+	frameBegan = 0;
+	pictureBegun = 0;
+	// The picture's depth buffer is of no use once the frame is drawn (the next one clears
+	// it), and a GPU that draws in tiles need not write it out of them: Direct3D 11.1 can say so
+	ID3D11DepthStencilView *depth = d3d.discards && d3d.immediate1 ? pictureDepth : nil;
+	if(d3d.threaded){
+		// to the drawing thread, which shows it when it has made it; held here while that
+		// thread is not done with the frame before
+		submitFrame(1, interval, depth);
+		return;
+	}
+	if(depth)
+		d3d.immediate1->DiscardView(depth);
+	measureFrameEnd();
+	presentFrame(interval, late);
+	// a swap chain that flips takes its buffer off the device when it shows it
+	boundTarget = nil;
+	boundDepth = nil;
+}
+
+// REVC_PERF: this renderer's own part of the lines, for so many frames, and from nought again
+extern "C" int
+rwd3d11_perf_line(char *line, int size, int frames)
+{
+	D3dPerf &p = d3dPerf;
+	double f = 1.0/(frames > 0 ? frames : 1);
+	double ms = f*1e-6;
+	ThreadPerf t;
+	takeThreadPerf(&t);
+	int n = snprintf(line, size,
+		"in the pipelines %.1f ms a frame, of it instancing %.1f ms (%u geometries and %u again, %u KB, "
+		"in all; Direct3D's part %.1f ms); constant buffers %.1f ms (%.0f a frame; the vertex shaders' State %.0f, "
+		"Scene %.0f, Object %.0f, Material %.0f, Lights %.0f, others %.0f); cameras %.1f ms; "
+		"the picture into a texture %.1f ms (%.1f times a frame); textures %.1f ms (%u in all, %u read back); ",
+		p.renderNs*ms, p.instanceNs*ms, (unsigned)p.instances, (unsigned)p.reinstances, (unsigned)(p.uploadBytes >> 10),
+		p.uploadNs*ms, p.uniformNs*ms, p.uniformBuffers*f, p.vertexBuffers[0]*f, p.vertexBuffers[1]*f,
+		p.vertexBuffers[2]*f, p.vertexBuffers[3]*f, p.vertexBuffers[4]*f, p.vertexBuffers[5]*f,
+		p.cameraNs*ms, p.copyNs*ms, p.copies*f,
+		p.textureNs*ms, (unsigned)p.textures, (unsigned)p.readBacks);
+	if(n < 0 || n >= size)
+		n = size - 1;
+	if(d3d.threaded){
+		// by the drawing thread's own count of frames: it is the one that shows them
+		double tms = 1e-6/(t.frames > 0 ? t.frames : 1);
+		n += snprintf(line + n, size - n,
+			"the drawing thread made a frame's calls in %.1f ms (%u parts of shared buffers written in all) and "
+			"showed it in %.1f ms (%u of %u frames without waiting for the vertical blank); the game's thread "
+			"handed a frame over in %.1f ms, %.1f of it waiting for that thread",
+			t.makeNs*tms, (unsigned)t.writes, t.showNs*tms, (unsigned)t.showsAtOnce, (unsigned)t.shows,
+			p.showNs*ms, t.waitedNs*ms);
+	}else
+		n += snprintf(line + n, size - n, "shown in %.1f ms (%u of %u frames without waiting for the vertical blank)",
+			p.showNs*ms, (unsigned)t.showsAtOnce, (unsigned)t.shows);
+	memset(&p, 0, sizeof(p));
+	return n;
 }
 
 extern "C" int
@@ -2033,9 +2287,13 @@ rwd3d11_read_back(int width, int height, unsigned char *rgba)
 		if(FAILED(d3d.device->CreateTexture2D(&td, nil, &d3d.readBack)))
 			return false;
 	}
-	d3d.context->CopyResource(d3d.readBack, d3d.backBuffer);
+	// with everything drawn so far in it, and on the device's own context: nothing can be
+	// read through one that only keeps calls
+	d3dPerf.readBacks++;
+	syncDevice();
+	d3d.immediate->CopyResource(d3d.readBack, d3d.backBuffer);
 	D3D11_MAPPED_SUBRESOURCE mapped;
-	if(FAILED(d3d.context->Map(d3d.readBack, 0, D3D11_MAP_READ, 0, &mapped)))
+	if(FAILED(d3d.immediate->Map(d3d.readBack, 0, D3D11_MAP_READ, 0, &mapped)))
 		return false;
 	for(int y = 0; y < height; y++){
 		const unsigned char *from = (const unsigned char*)mapped.pData + (size_t)(height - 1 - y)*mapped.RowPitch;
@@ -2047,7 +2305,7 @@ rwd3d11_read_back(int width, int height, unsigned char *rgba)
 			to[3] = from[3];
 		}
 	}
-	d3d.context->Unmap(d3d.readBack, 0);
+	d3d.immediate->Unmap(d3d.readBack, 0);
 	return true;
 }
 
@@ -2057,11 +2315,14 @@ rwd3d11_resize(int width, int height)
 {
 	if(d3d.device == nil || (width == d3d.width && height == d3d.height) || width <= 0 || height <= 0)
 		return;
+	// nothing that is still to be made may hold the old buffers
+	syncDevice();
 	releaseBackBuffer();
 	d3d.width = width;
 	d3d.height = height;
 	if(d3d.swapChain){
-		HRESULT hr = d3d.swapChain->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
+		// as many buffers as it has, of the format it has
+		HRESULT hr = d3d.swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
 		if(FAILED(hr))
 			logf("d3d: the swap chain did not take %dx%d, 0x%08X", width, height, (unsigned)hr);
 		host_set_swap_chain(d3d.swapChain, width, height);

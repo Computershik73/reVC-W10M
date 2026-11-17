@@ -158,11 +158,16 @@ def packages():
 
 def package(refresh=False):
     """The installed port. Remembered between calls (w10m/work/phone_package.json, written by
-    install and version): listing the phone's packages takes a minute or more when it is busy."""
+    install and version): listing the phone's packages takes a minute or more when it is busy.
+    Remembered for the phone it was read from: the USB portal is whichever phone is plugged in,
+    and another phone's package name starts nothing and sets nothing on this one."""
     cache = os.path.join(OUT, "phone_package.json")
+    phone = json.loads(get("/api/os/info")).get("ComputerName")
     if not refresh and os.path.isfile(cache):
         with open(cache, encoding="utf-8") as f:
-            return json.load(f)
+            kept = json.load(f)
+        if kept.get("Phone") == phone:
+            return kept
     found = packages()
     if not found:
         if os.path.isfile(cache):
@@ -170,7 +175,7 @@ def package(refresh=False):
         sys.exit("the port is not installed on the phone")
     os.makedirs(OUT, exist_ok=True)
     with open(cache, "w", encoding="utf-8") as f:
-        json.dump({k: found[0].get(k) for k in ("PackageFullName", "PackageRelativeId")}, f)
+        json.dump(dict({k: found[0].get(k) for k in ("PackageFullName", "PackageRelativeId")}, Phone=phone), f)
     return found[0]
 
 

@@ -20,6 +20,9 @@ struct sTimeBar
 #ifdef GTA_W10M
 	// librw's counts of draws while the timer ran (REVC_PERF=1): geometry and immediate
 	uint32 draws, immediates;
+	// the Direct3D renderer's: triangles, and where in its count of pixels the timer began and ended
+	uint32 triangles;
+	int32 pixelsFrom, pixelsTo;
 #endif
 };
 
@@ -38,12 +41,20 @@ float FrameInitTime;
 #endif
 
 #ifdef GTA_W10M
+#ifdef RW_D3D11
+#include "rwd3d11_host.h"
+#else
+static unsigned long long rwd3d11_triangles(void) { return 0; }
+static int rwd3d11_pixel_mark(void) { return 0; }
+static float rwd3d11_screens_between(int from, int to) { return 0.0f; }
+#endif
 static uint32 tbFrames;
 
 // The timed parts of the frame last drawn and how long each took, for the phone's log
 // (skel/w10m): the log is where a phone's frames can be looked into.
 int32
-tbLastFrame(uint32 *frame, const char **names, float *milliseconds, uint32 *draws, uint32 *immediates, int32 max)
+tbLastFrame(uint32 *frame, const char **names, float *milliseconds, uint32 *draws, uint32 *immediates,
+            uint32 *triangles, float *screens, int32 max)
 {
 	int32 n = 0;
 	float perUnit = (float)CTimer::GetCyclesPerFrame() / (float)CTimer::GetCyclesPerMillisecond();
@@ -55,6 +66,8 @@ tbLastFrame(uint32 *frame, const char **names, float *milliseconds, uint32 *draw
 		milliseconds[n] = (TimerBar.Timers[i].endTime - TimerBar.Timers[i].startTime) * perUnit;
 		draws[n] = TimerBar.Timers[i].draws;
 		immediates[n] = TimerBar.Timers[i].immediates;
+		triangles[n] = TimerBar.Timers[i].triangles;
+		screens[n] = rwd3d11_screens_between(TimerBar.Timers[i].pixelsFrom, TimerBar.Timers[i].pixelsTo);
 		n++;
 	}
 	return n;
@@ -89,6 +102,8 @@ void tbStartTimer(int32 unk, Const char *name)
 #ifdef GTA_W10M
 	TimerBar.Timers[TimerBar.count].draws = rw::gl3::perf.draws;
 	TimerBar.Timers[TimerBar.count].immediates = rw::gl3::perf.immediates;
+	TimerBar.Timers[TimerBar.count].triangles = (uint32)rwd3d11_triangles();
+	TimerBar.Timers[TimerBar.count].pixelsFrom = TimerBar.Timers[TimerBar.count].pixelsTo = rwd3d11_pixel_mark();
 #endif
 	TimerBar.count++;
 }
@@ -105,6 +120,8 @@ void tbEndTimer(Const char* name)
 #ifdef GTA_W10M
 	TimerBar.Timers[n].draws = rw::gl3::perf.draws - TimerBar.Timers[n].draws;
 	TimerBar.Timers[n].immediates = rw::gl3::perf.immediates - TimerBar.Timers[n].immediates;
+	TimerBar.Timers[n].triangles = (uint32)rwd3d11_triangles() - TimerBar.Timers[n].triangles;
+	TimerBar.Timers[n].pixelsTo = rwd3d11_pixel_mark();
 #endif
 }
 

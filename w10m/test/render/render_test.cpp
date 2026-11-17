@@ -59,6 +59,7 @@ extern "C" void host_fatal(const char* text) {
 }
 extern "C" int32_t reVC_W10M_Frame(void) { return HOST_CONTEXT_LOADING; }
 extern "C" void reVC_W10M_SkipCutscenes(void) {}
+extern "C" void reVC_W10M_DriveItself(void) {}
 
 // ===[ The checks ]===
 

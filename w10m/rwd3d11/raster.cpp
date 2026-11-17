@@ -94,10 +94,100 @@ enum
 	KEPT_DEPTH,
 };
 
+// ===[ A texture's smaller copies (its levels below the first), made here: REVC_D3D_MIPS=1 ]===
+// The PC game's textures have one level each. Seen from afar, a texture is then sampled many
+// texels apart for every pixel, and a phone's GPU, which fetches a texture through a small
+// cache, pays for each sample as for a new part of the texture: a Lumia 650 draws a picture
+// full of a 512x512 texture at 16 texels to the pixel in 16.6 ms, and in 2.7 with the smaller
+// copies there (bench/d3dbench.cpp, REVC_BENCH=fill). With REVC_D3D_MIPS=1 a texture that
+// comes with one level gets the others when it is handed over: decoded once, averaged two by
+// two (by its alpha where it has any, so that what is cut out does not darken its edge) and
+// encoded again level by level, down to four pixels on its shorter side. It is then sampled
+// between two levels (flushStates), which costs that GPU what one does.
+//
+// Not what the package does, yet. An atlas cannot have them (its textures would run into one
+// another), and most of a street is drawn from atlases; without atlases a Lumia 650's GPU
+// has 5 to 8 ms less to do in a frame at 1280x720 with them, which the draws that atlases
+// save are worth as much as. And they are made on the game's thread: the frame in which a
+// part of the city comes in took 110 to 140 ms where it took 60 to 100.
+static int32 makeLevels = -1;
+static bool32 noLevelsBelow;	// for a texture that is other textures side by side (an atlas)
+
+void encodeDXT(uint8 *dst, uint8 *rgba, int32 w, int32 h, int32 dxt, bool32 hasAlpha);
+
+static int32
+levelsOfBlocks(int32 w, int32 h)
+{
+	int32 n = 1;
+	while(w > 4 && h > 4){
+		n++;
+		w /= 2;
+		h /= 2;
+	}
+	return n;
+}
+
+static bool32
+wantsLevelsBelow(int32 w, int32 h, int32 levelsItHas)
+{
+	if(makeLevels < 0){
+		const char *value = getenv("REVC_D3D_MIPS");
+		makeLevels = value != nil && atoi(value) != 0;
+	}
+	return makeLevels && !noLevelsBelow && levelsItHas == 1 && w >= 8 && h >= 8 &&
+		(w & (w-1)) == 0 && (h & (h-1)) == 0;
+}
+
+// The levels below the first of a compressed texture, from the first as it is locked
+static void
+makeBlockLevelsBelow(Raster *raster, ID3D11Texture2D *texture, int32 levels)
+{
+	Gl3Raster *natras = GETGL3RASTEREXT(raster);
+	int32 dxt = natras->internalFormat == GL_COMPRESSED_RGBA_S3TC_DXT3_EXT ? 3 :
+		natras->internalFormat == GL_COMPRESSED_RGBA_S3TC_DXT5_EXT ? 5 : 1;
+	int32 blockBytes = dxt == 1 ? 8 : 16;
+	int32 w = raster->width, h = raster->height;
+	uint8 *rgba = (uint8*)rwMalloc(w*h*4, MEMDUR_FUNCTION | ID_DRIVER);
+	uint8 *blocks = (uint8*)rwMalloc((w/8)*(h/8)*blockBytes, MEMDUR_FUNCTION | ID_DRIVER);
+	switch(dxt){
+	case 1: decompressDXT1(rgba, w, h, raster->pixels); break;
+	case 3: decompressDXT3(rgba, w, h, raster->pixels); break;
+	default: decompressDXT5(rgba, w, h, raster->pixels); break;
+	}
+	bool32 hasAlpha = natras->hasAlpha;
+	for(int32 level = 1; level < levels; level++){
+		int32 nw = w/2, nh = h/2;
+		// into the same memory: a pixel is written where the ones it is made of have been read
+		for(int32 y = 0; y < nh; y++)
+			for(int32 x = 0; x < nw; x++){
+				uint8 *q[4] = { &rgba[(y*2*w + x*2)*4], &rgba[(y*2*w + x*2 + 1)*4],
+					&rgba[((y*2 + 1)*w + x*2)*4], &rgba[((y*2 + 1)*w + x*2 + 1)*4] };
+				uint8 out[4];
+				if(hasAlpha){
+					int32 a = q[0][3] + q[1][3] + q[2][3] + q[3][3];
+					for(int32 c = 0; c < 3; c++)
+						out[c] = a ? (q[0][c]*q[0][3] + q[1][c]*q[1][3] + q[2][c]*q[2][3] + q[3][c]*q[3][3] + a/2)/a : 0;
+					out[3] = (a + 2)/4;
+				}else
+					for(int32 c = 0; c < 4; c++)
+						out[c] = (q[0][c] + q[1][c] + q[2][c] + q[3][c] + 2)/4;
+				memcpy(&rgba[(y*nw + x)*4], out, 4);
+			}
+		encodeDXT(blocks, rgba, nw, nh, dxt, hasAlpha);
+		d3d.context->UpdateSubresource(texture, level, nil, blocks, (nw/4)*blockBytes, 0);
+		w = nw;
+		h = nh;
+	}
+	rwFree(blocks);
+	rwFree(rgba);
+}
+
 // The Direct3D texture of a raster that is sampled, with so many levels
 static bool32
 makeTexture(Raster *raster, int32 levels)
 {
+	PerfScope timed(&d3dPerf.textureNs);
+	d3dPerf.textures++;
 	Gl3Raster *natras = GETGL3RASTEREXT(raster);
 	D3D11_TEXTURE2D_DESC td;
 	memset(&td, 0, sizeof(td));
@@ -301,6 +391,10 @@ rasterCreateZbuffer(Raster *raster)
 	td.MipLevels = 1;
 	td.ArraySize = 1;
 	td.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+	// REVC_D3D_DEPTH16=1: 16 bits of depth and no stencil, a measurement of what the depth
+	// buffer's size costs a GPU that draws in tiles
+	if(getenv("REVC_D3D_DEPTH16"))
+		td.Format = DXGI_FORMAT_D16_UNORM;
 	td.SampleDesc.Count = 1;
 	td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 	ID3D11Texture2D *texture = nil;
@@ -371,7 +465,14 @@ allocateDXT(Raster *raster, int32 dxt, int32 numLevels, bool32 hasAlpha)
 	// Direct3D takes blocks for a texture whose sides are whole blocks; a smaller one is
 	// kept decoded
 	natras->type = (raster->width & 3) == 0 && (raster->height & 3) == 0 ? KEPT_BLOCKS : KEPT_DECODED;
-	makeTexture(raster, natras->numLevels);
+	int32 levels = natras->numLevels;
+	if(natras->type == KEPT_BLOCKS && wantsLevelsBelow(raster->width, raster->height, natras->numLevels)){
+		// its file has one level: the others are made when that one is handed over
+		natras->autogenMipmap = 1;
+		levels = levelsOfBlocks(raster->width, raster->height);
+	}else
+		natras->autogenMipmap = 0;
+	makeTexture(raster, levels);
 
 	raster->originalStride = raster->stride;
 
@@ -476,9 +577,12 @@ readLevel(Raster *raster, int32 level, uint8 *px, uint32 size)
 	ID3D11Texture2D *copy = nil;
 	if(FAILED(d3d.device->CreateTexture2D(&td, nil, &copy)))
 		return;
-	d3d.context->CopySubresourceRegion(copy, 0, 0, 0, 0, texture, level, nil);
+	// as it is after everything drawn and written so far, on the device's own context
+	d3dPerf.readBacks++;
+	syncDevice();
+	d3d.immediate->CopySubresourceRegion(copy, 0, 0, 0, 0, texture, level, nil);
 	D3D11_MAPPED_SUBRESOURCE mapped;
-	if(SUCCEEDED(d3d.context->Map(copy, 0, D3D11_MAP_READ, 0, &mapped))){
+	if(SUCCEEDED(d3d.immediate->Map(copy, 0, D3D11_MAP_READ, 0, &mapped))){
 		uint32 rows = blocks ? td.Height/4 : h;
 		uint32 rowBytes = rows ? size/rows : 0;
 		if(rowBytes > mapped.RowPitch)
@@ -494,7 +598,7 @@ readLevel(Raster *raster, int32 level, uint8 *px, uint32 size)
 					to[x+2] = t;
 				}
 		}
-		d3d.context->Unmap(copy, 0);
+		d3d.immediate->Unmap(copy, 0);
 	}
 	copy->Release();
 }
@@ -593,9 +697,17 @@ makeLevelsBelow(Raster *raster, ID3D11Texture2D *texture)
 			for(int32 x = 0; x < nw; x++){
 				int32 x0 = x*2 < w ? x*2 : w-1, x1 = x*2+1 < w ? x*2+1 : w-1;
 				int32 y0 = y*2 < h ? y*2 : h-1, y1 = y*2+1 < h ? y*2+1 : h-1;
-				for(int32 c = 0; c < 4; c++)
-					below[(y*nw + x)*4 + c] = (above[(y0*w + x0)*4 + c] + above[(y0*w + x1)*4 + c] +
-						above[(y1*w + x0)*4 + c] + above[(y1*w + x1)*4 + c] + 2)/4;
+				uint8 *q[4] = { &above[(y0*w + x0)*4], &above[(y0*w + x1)*4], &above[(y1*w + x0)*4], &above[(y1*w + x1)*4] };
+				uint8 *to = &below[(y*nw + x)*4];
+				// by its alpha, so that what is see-through does not colour what is not
+				int32 a = q[0][3] + q[1][3] + q[2][3] + q[3][3];
+				if(a == 4*255 || a == 0)
+					for(int32 c = 0; c < 3; c++)
+						to[c] = (q[0][c] + q[1][c] + q[2][c] + q[3][c] + 2)/4;
+				else
+					for(int32 c = 0; c < 3; c++)
+						to[c] = (q[0][c]*q[0][3] + q[1][c]*q[1][3] + q[2][c]*q[2][3] + q[3][c]*q[3][3] + a/2)/a;
+				to[3] = (a + 2)/4;
 			}
 		d3d.context->UpdateSubresource(texture, level, nil, below, nw*4, 0);
 		if(owned)
@@ -612,6 +724,7 @@ void
 rasterUnlock(Raster *raster, int32 level)
 {
 	Gl3Raster *natras = GETGL3RASTEREXT(raster);
+	PerfScope timed(&d3dPerf.textureNs);
 
 	assert(raster->pixels);
 
@@ -630,10 +743,12 @@ rasterUnlock(Raster *raster, int32 level)
 				if(texture && (uint32)level < td.MipLevels){
 					int32 blockBytes = natras->internalFormat == GL_COMPRESSED_RGBA_S3TC_DXT3_EXT ||
 						natras->internalFormat == GL_COMPRESSED_RGBA_S3TC_DXT5_EXT ? 16 : 8;
-					if(natras->type == KEPT_BLOCKS)
+					if(natras->type == KEPT_BLOCKS){
 						d3d.context->UpdateSubresource(texture, level, nil, raster->pixels,
 							((raster->width + 3)/4)*blockBytes, 0);
-					else{
+						if(level == 0 && natras->autogenMipmap && td.MipLevels > 1)
+							makeBlockLevelsBelow(raster, texture, td.MipLevels);
+					}else{
 						// decoded: the decoders write whole blocks
 						int32 w = (raster->width + 3) & ~3, h = (raster->height + 3) & ~3;
 						uint8 *rgba = (uint8*)rwMalloc(w*h*4, MEMDUR_FUNCTION | ID_DRIVER);
@@ -1080,7 +1195,7 @@ encodeColorBlock(uint8 *dst, uint8 (*px)[4], bool32 punchThrough)
 }
 
 // RGBA to DXT1, 3 or 5; w and h are multiples of four
-static void
+void
 encodeDXT(uint8 *dst, uint8 *rgba, int32 w, int32 h, int32 dxt, bool32 hasAlpha)
 {
 	uint8 px[16][4];
@@ -1221,7 +1336,10 @@ makeAtlas(AtlasItem *items, int32 n, int32 dxt, bool32 hasAlpha)
 	Raster *first = items[0].raster;
 	Raster *raster = Raster::create(width, height, first->depth,
 		(first->format & 0x0F00) | Raster::TEXTURE | Raster::DONTALLOCATE, PLATFORM_GL3);
+	// with its one level: smaller copies of it would run its textures into one another
+	noLevelsBelow = 1;
 	allocateDXT(raster, dxt, 1, hasAlpha);
+	noLevelsBelow = 0;
 	int32 blockBytes = dxt == 1 ? 8 : 16;
 	uint8 *px = raster->lock(0, Raster::LOCKWRITE|Raster::LOCKNOFETCH);
 	memset(px, 0, (width/4)*(height/4)*blockBytes);
@@ -1385,6 +1503,9 @@ readNativeTexture(Stream *stream)
 		raster = Raster::create(width, height, depth, format | Raster::TEXTURE | Raster::DONTALLOCATE, PLATFORM_GL3);
 		allocateDXT(raster, compression, numLevels, flags & 1);
 	}else{
+		// one level in its file: the others are made from it here, as for a compressed one
+		if(numLevels == 1 && !(format & Raster::MIPMAP) && wantsLevelsBelow(width, height, 1))
+			format |= Raster::MIPMAP | Raster::AUTOMIPMAP;
 		raster = Raster::create(width, height, depth, format | Raster::TEXTURE, PLATFORM_GL3);
 	}
 	assert(raster);

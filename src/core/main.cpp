@@ -1360,6 +1360,16 @@ if(gbRenderFadingInEntities)
 #define W10M_TIMED(name, what) do { what; } while(0)
 #endif
 
+#if defined(GTA_W10M) && defined(RW_D3D11)
+// The sky after the world's houses, not before them (skel/w10m sets it where the GPU is slow):
+// what a house hides of it is then not drawn (w10m/rwd3d11/immed.cpp). The sky's colours
+// are there from the frame's start as ever (CClouds::RenderBackground); it is the clouds, the
+// moon and the stars, and the ground's colour under the horizon, that come later. Seen
+// through a car's glass, which is drawn with the houses, there are no clouds.
+bool W10M_SkyAfterWorld;
+extern "C" void rwd3d11_draw_behind(int on);
+#endif
+
 void
 RenderScene(void)
 {
@@ -1371,10 +1381,35 @@ RenderScene(void)
 #endif
 	PUSH_RENDERGROUP("RenderScene");
 	// timed one by one, for the phone's log (skel/w10m): the scene is where a slow phone's frame goes
+#if defined(GTA_W10M) && defined(RW_D3D11)
+	if(W10M_SkyAfterWorld){
+		W10M_TIMED("Roads", CRenderer::RenderRoads());
+		CCoronas::RenderReflections();
+		W10M_TIMED("World", CRenderer::RenderEverythingBarRoads());
+		// The sky is written to be drawn in the state the frame begins with (DefinedState),
+		// and the world's pass leaves another: the fog on, above all, which made a square
+		// of the fog's colour of every cloud. So that state again for the sky, and then
+		// what the world's pass left, for what comes after it.
+		RwBool fog, vertexAlpha;
+		RwCullMode cull;
+		RwRenderStateGet(rwRENDERSTATEFOGENABLE, &fog);
+		RwRenderStateGet(rwRENDERSTATEVERTEXALPHAENABLE, &vertexAlpha);
+		RwRenderStateGet(rwRENDERSTATECULLMODE, &cull);
+		DefinedState();
+		rwd3d11_draw_behind(1);
+		W10M_TIMED("Sky", CClouds::Render(); DoRWRenderHorizon());
+		rwd3d11_draw_behind(0);
+		RwRenderStateSet(rwRENDERSTATEFOGENABLE, (void*)(uintptr)fog);
+		RwRenderStateSet(rwRENDERSTATEVERTEXALPHAENABLE, (void*)(uintptr)vertexAlpha);
+		RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)(uintptr)cull);
+	}else
+#endif
+	{
 	W10M_TIMED("Sky", CClouds::Render(); DoRWRenderHorizon());
 	W10M_TIMED("Roads", CRenderer::RenderRoads());
 	CCoronas::RenderReflections();
 	W10M_TIMED("World", CRenderer::RenderEverythingBarRoads());
+	}
 	RwRenderStateSet(rwRENDERSTATECULLMODE, (void*)rwCULLMODECULLNONE);
 	W10M_TIMED("Water", CWaterLevel::RenderWater());
 	CRenderer::RenderBoats();

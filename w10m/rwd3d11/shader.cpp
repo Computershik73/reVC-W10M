@@ -57,6 +57,11 @@ static int uniformTypesize[] = {
 static ShaderStage *stages[nelem(shaderCodes)];
 
 Shader *currentShader;
+bool32 onlyDirectionals;
+bool32 instancing;
+bool32 geometryDraw;
+// REVC_D3D_LIGHTS=all: the shaders with every kind of light are used as they are asked for
+static bool32 everyLight;
 static ID3D11InputLayout *boundLayout;
 static ID3D11VertexShader *boundVertex;
 static ID3D11PixelShader *boundPixel;
@@ -186,13 +191,37 @@ writeUniform(ShaderStage *s, int32 id, const void *data, uint32 size)
 	}
 }
 
+// The vertex shader a program is drawn with now: its own, or the one for directional lights
+// alone while there are no others
+static inline ShaderStage*
+vertexOf(Shader *sh)
+{
+	ShaderStage *s = sh->vertex;
+	if(s->directionals && onlyDirectionals && !everyLight)
+		s = s->directionals;
+	if(geometryDraw && s->instanced)
+		s = s->instanced;
+	return s;
+}
+
+int32
+instanceVectorsInUse(void)
+{
+	return currentShader ? vertexOf(currentShader)->instanceVectors : 0;
+}
+
 // what glUniform is to the OpenGL renderer's callers: for the shaders in use, now
 void
 setUniformRaw(int id, const float *data, int numFloats)
 {
 	if(id < 0 || id >= uniformRegistry.numUniforms || currentShader == nil)
 		return;
-	writeUniform(currentShader->vertex, id, data, numFloats*sizeof(float));
+	// every form of the vertex shader: which of them is drawn with is known at the draw
+	for(ShaderStage *s = currentShader->vertex; s; s = s == currentShader->vertex ? s->directionals : nil){
+		writeUniform(s, id, data, numFloats*sizeof(float));
+		if(s->instanced)
+			writeUniform(s->instanced, id, data, numFloats*sizeof(float));
+	}
 	writeUniform(currentShader->pixel, id, data, numFloats*sizeof(float));
 }
 
@@ -214,9 +243,20 @@ flushStage(ShaderStage *s)
 		if(!buf->dirty)
 			continue;
 		D3D11_MAPPED_SUBRESOURCE mapped;
-		if(SUCCEEDED(d3d.context->Map(buf->buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))){
-			memcpy(mapped.pData, buf->shadow, buf->size);
-			d3d.context->Unmap(buf->buffer, 0);
+		{
+			PerfScope timed(&d3dPerf.uniformNs);
+			if(SUCCEEDED(d3d.context->Map(buf->buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))){
+				memcpy(mapped.pData, buf->shadow, buf->size);
+				d3d.context->Unmap(buf->buffer, 0);
+			}
+		}
+		d3dPerf.uniformBuffers++;
+		if(perf.enabled && s->code->vertex){
+			static const char *names[5] = { "State", "Scene", "Object", "Material", "Lights" };
+			int32 k = 0;
+			while(k < 5 && strcmp(s->code->buffers[b].name, names[k]) != 0)
+				k++;
+			d3dPerf.vertexBuffers[k]++;
 		}
 		buf->dirty = 0;
 		perf.uniforms++;
@@ -226,9 +266,11 @@ flushStage(ShaderStage *s)
 void
 flushUniforms(void)
 {
-	flushStage(currentShader->vertex);
+	flushStage(vertexOf(currentShader));
 	flushStage(currentShader->pixel);
 }
+
+static const ShaderCode *findCode(const char *name);
 
 static ShaderStage*
 getStage(const ShaderCode *code)
@@ -277,6 +319,35 @@ getStage(const ShaderCode *code)
 	for(int32 i = 0; i < uniformRegistry.numUniforms; i++)
 		placeUniform(s, i);
 	stages[at] = s;
+	// x_fullLight has x_dirLight to stand in for it (tools/make_shaders.py)
+	static const char full[] = "_fullLight";
+	size_t length = strlen(code->name);
+	if(code->vertex && length > sizeof(full)-1 && strcmp(code->name + length - (sizeof(full)-1), full) == 0){
+		char name[64];
+		snprintf(name, sizeof(name), "%.*s_dirLight", (int)(length - (sizeof(full)-1)), code->name);
+		const ShaderCode *other = findCode(name);
+		if(other)
+			s->directionals = getStage(other);
+	}
+	// and x, x_fullLight, x_dirLight have x_inst and its like, for x one of these
+	static const char *instancedOnes[] = { "default_atlas", "default", "matfx_env" };
+	if(code->vertex && strstr(code->name, "_inst") == nil){
+		for(uint32 k = 0; k < nelem(instancedOnes) && instancing; k++){
+			size_t base = strlen(instancedOnes[k]);
+			if(strncmp(code->name, instancedOnes[k], base) != 0)
+				continue;
+			const char *rest = code->name + base;
+			if(*rest != '\0' && strcmp(rest, "_fullLight") != 0 && strcmp(rest, "_dirLight") != 0)
+				continue;
+			char name[64];
+			snprintf(name, sizeof(name), "%s_inst%s", instancedOnes[k], rest);
+			const ShaderCode *other = findCode(name);
+			if(other)
+				s->instanced = getStage(other);
+			break;
+		}
+	}else if(code->vertex)
+		s->instanceVectors = strncmp(code->name, "matfx_env", 9) == 0 ? 6 : 5;
 	return s;
 }
 
@@ -369,26 +440,48 @@ Shader::create(const char *vertexName, const char *pixelName)
 	return makeShader(vs, ps);
 }
 
+// The shaders are bound when something is drawn (bindShaders), not here: which form of the
+// vertex shader it is depends on the lights and on what is drawn, and a shader bound only to
+// be bound over is a call the driver is not spared.
 void
 Shader::use(void)
 {
 	if(currentShader == this)
 		return;
-	if(boundVertex != this->vertex->vertex){
-		boundVertex = this->vertex->vertex;
-		d3d.context->VSSetShader(boundVertex, nil, 0);
-		if(this->vertex->numSlots)
-			d3d.context->VSSetConstantBuffers(0, this->vertex->numSlots, this->vertex->bound);
-	}
-	if(boundPixel != this->pixel->pixel){
-		boundPixel = this->pixel->pixel;
-		d3d.context->PSSetShader(boundPixel, nil, 0);
-		if(this->pixel->numSlots)
-			d3d.context->PSSetConstantBuffers(0, this->pixel->numSlots, this->pixel->bound);
-	}
 	currentShader = this;
 	perf.programs++;
 	perf.changed |= 4;
+}
+
+// The context has nothing bound (a new list of calls for the drawing thread): the shaders in
+// use stay the ones in use, and are bound again by whoever draws next
+void
+forgetShaderBindings(void)
+{
+	boundVertex = nil;
+	boundPixel = nil;
+	boundLayout = nil;
+}
+
+void
+bindShaders(void)
+{
+	if(currentShader == nil)
+		return;
+	ShaderStage *vertex = vertexOf(currentShader);
+	ShaderStage *pixel = currentShader->pixel;
+	if(boundVertex != vertex->vertex){
+		boundVertex = vertex->vertex;
+		d3d.context->VSSetShader(boundVertex, nil, 0);
+		if(vertex->numSlots)
+			d3d.context->VSSetConstantBuffers(0, vertex->numSlots, vertex->bound);
+	}
+	if(boundPixel != pixel->pixel){
+		boundPixel = pixel->pixel;
+		d3d.context->PSSetShader(boundPixel, nil, 0);
+		if(pixel->numSlots)
+			d3d.context->PSSetConstantBuffers(0, pixel->numSlots, pixel->bound);
+	}
 }
 
 void
@@ -442,6 +535,24 @@ makeLayout(ShaderStage *s, AttribDesc *attribs, int32 numAttribs)
 		e->InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
 		have |= 1u << a->index;
 	}
+	// What a draw has of its own, where the shader reads it with the vertices (INSTANCE,
+	// shaders/default_vs.hlsl): five vectors from a second buffer, the same for every vertex,
+	// and a sixth for the material effects' shader
+	uint32 instance = 0x1Fu << ATTRIB_TEXCOORDS2;
+	if(s->instanceVectors && (have & instance) == 0 && n + s->instanceVectors <= 16){
+		for(int32 i = 0; i < s->instanceVectors; i++){
+			D3D11_INPUT_ELEMENT_DESC *e = &elements[n++];
+			memset(e, 0, sizeof(*e));
+			e->SemanticName = i < 5 ? "TEXCOORD" : "COLOR";
+			e->SemanticIndex = i < 5 ? 2 + i : 1;
+			e->Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			e->InputSlot = 1;
+			e->AlignedByteOffset = i*16;
+			e->InputSlotClass = D3D11_INPUT_PER_INSTANCE_DATA;
+			e->InstanceDataStepRate = 1;
+		}
+		have |= instance;
+	}
 	// Direct3D has no value for an attribute that is not there
 	if(s->code->attribs & ~have){
 		logf("d3d: the shader %s reads vertex attributes these vertices do not have (it reads 0x%X, they have 0x%X): not drawn",
@@ -460,7 +571,7 @@ makeLayout(ShaderStage *s, AttribDesc *attribs, int32 numAttribs)
 bool32
 setInputLayout(uint32 format, AttribDesc *attribs, int32 numAttribs)
 {
-	ShaderStage *s = currentShader->vertex;
+	ShaderStage *s = vertexOf(currentShader);
 	ID3D11InputLayout *layout = nil;
 	int32 i;
 	for(i = 0; i < s->numLayouts; i++)
@@ -494,6 +605,9 @@ setInputLayout(uint32 format, AttribDesc *attribs, int32 numAttribs)
 void
 openShaders(void)
 {
+	const char *lights = getenv("REVC_D3D_LIGHTS");
+	everyLight = lights && strcmp(lights, "all") == 0;
+	onlyDirectionals = 0;
 	currentShader = nil;
 	boundLayout = nil;
 	boundVertex = nil;

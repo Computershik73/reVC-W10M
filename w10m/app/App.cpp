@@ -970,13 +970,21 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
     // The game draws into a swap chain of the panel's size times this, and the compositor
     // stretches it over the panel: a 1440x2560 screen is more than these GPUs fill at speed.
 
-    static constexpr int32_t kResolutions[] = {0, 100, 75, 60, 50};
+    static constexpr int32_t kResolutions[] = {0, 100, 87, 75, 60, 50};
 
-    // Left to itself the game is drawn at 720 lines at most, and at 432 on a GPU that stops
-    // at Direct3D level 9: a Lumia 650 with the game's drawing cut down to what its processor
-    // gets through is held back by the pixels next, 12 frames a second at 720 lines where
-    // 432 give 17 (and 360 no more than that).
+    // Left to itself the game is drawn at 720 lines at most, and at fewer on a GPU that stops
+    // at Direct3D level 9. With the Direct3D 11 renderer that is 626 (87 per cent of a screen
+    // of 720 lines): a Lumia 650 drives through the city at 24 to 29 frames a second at
+    // 1113x626, at 25 to 30 at 960x540 and at 17 to 25 at all of its screen (README, The
+    // Direct3D 11 renderer).
+    // With the OpenGL ES renderer it is 432: that phone, held back by the pixels once its
+    // drawing was cut down to what its processor gets through, had 12 frames a second at 720
+    // lines where 432 gave 17 (and 360 no more than that).
+#ifdef REVC_D3D11
+    int32_t AutoLines() const { return level9_ ? 626 : 720; }
+#else
     int32_t AutoLines() const { return level9_ ? 432 : 720; }
+#endif
 
     double RenderScale(double nativeW, double nativeH) const {
         if (resolution_ > 0) return resolution_ / 100.0;

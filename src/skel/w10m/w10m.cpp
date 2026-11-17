@@ -11,11 +11,15 @@
 #include "common.h"
 #include "crossplatform.h"
 
+#include "AutoPilot.h"
+#include "CarCtrl.h"
 #include "CutsceneMgr.h"
 #include "Frontend.h"
 #include "General.h"
 #include "PlayerInfo.h"
 #include "PlayerPed.h"
+#include "Pools.h"
+#include "Vehicle.h"
 #include "Renderer.h"
 #include "RwHelper.h"
 #include "Timer.h"
@@ -30,8 +34,11 @@
 #endif
 
 int32 tbLastFrame(uint32 *frame, const char **names, float *milliseconds, uint32 *draws, uint32 *immediates,
-                  int32 max);	// core/timebars.cpp
+                  uint32 *triangles, float *screens, int32 max);	// core/timebars.cpp
 extern float W10M_VehicleDetail;	// rw/VisibilityPlugins.cpp
+#ifdef RW_D3D11
+extern bool W10M_SkyAfterWorld;	// core/main.cpp
+#endif
 bool ReadIniIfExists(const char *cat, const char *key, uint8 *out);	// core/re3.cpp
 bool glt_on(void);	// w10m/glthread: OpenGL is called on a drawing thread
 void StoreIni(const char *cat, const char *key, uint8 val);
@@ -45,19 +52,25 @@ NoteFrameParts(void)
 	enum { MAX_PARTS = 40 };
 	static char partNames[MAX_PARTS][20];
 	static float partSums[MAX_PARTS];
-	static uint32 partDraws[MAX_PARTS], partImmediates[MAX_PARTS];
+	static uint32 partDraws[MAX_PARTS], partImmediates[MAX_PARTS], partTriangles[MAX_PARTS];
+	static float partScreens[MAX_PARTS], frameScreens;
+	static unsigned long long trianglesNoted;
 	static int32 numParts, numFrames;
 	static uint32 lastFrame, noted;
 
 	const char *names[MAX_PARTS];
 	float ms[MAX_PARTS];
-	uint32 draws[MAX_PARTS], immediates[MAX_PARTS];
+	uint32 draws[MAX_PARTS], immediates[MAX_PARTS], triangles[MAX_PARTS];
+	float screens[MAX_PARTS];
 	uint32 frame;
-	int32 n = tbLastFrame(&frame, names, ms, draws, immediates, MAX_PARTS);
+	int32 n = tbLastFrame(&frame, names, ms, draws, immediates, triangles, screens, MAX_PARTS);
 	rw::gl3::perf.frame++;
 	if (frame != lastFrame) {
 		lastFrame = frame;
 		numFrames++;
+#ifdef RW_D3D11
+		frameScreens += rwd3d11_screens_between(0, -1);
+#endif
 		for (int32 i = 0; i < n; i++) {
 			int32 j;
 			for (j = 0; j < numParts; j++)
@@ -68,12 +81,15 @@ NoteFrameParts(void)
 					continue;
 				strncpy(partNames[j], names[i], sizeof(partNames[j]) - 1);
 				partSums[j] = 0.0f;
-				partDraws[j] = partImmediates[j] = 0;
+				partDraws[j] = partImmediates[j] = partTriangles[j] = 0;
+				partScreens[j] = 0.0f;
 				numParts++;
 			}
 			partSums[j] += ms[i];
 			partDraws[j] += draws[i];
 			partImmediates[j] += immediates[i];
+			partTriangles[j] += triangles[i];
+			partScreens[j] += screens[i];
 		}
 	}
 
@@ -160,11 +176,38 @@ NoteFrameParts(void)
 		if (rw::gl3::gl3Caps.atlases)
 			host_logf("perf: atlases: %.0f meshes a frame went into the draw of the mesh before them", p.merged * f);
 		p.merged = 0;
+#ifdef RW_D3D11
+		char own[900];
+		rwd3d11_perf_line(own, sizeof(own), numFrames);
+		host_logf("perf: Direct3D: %s", own);
+		// what the GPU is asked for (w10m/rwd3d11/measure.cpp): the triangles, and with
+		// REVC_D3D_PIXELS the pixels, as so many pictures' worth
+		{
+			char text[900];
+			unsigned long long all = rwd3d11_triangles();
+			int32 used = snprintf(text, sizeof(text), "perf: %.1f thousand triangles a frame; in the game's parts:",
+			                      (double)(all - trianglesNoted) * 1e-3 * f);
+			trianglesNoted = all;
+			for (int32 j = 0; j < numParts && used < (int32)sizeof(text) - 40; j++)
+				if (partTriangles[j] * f >= 50.0f)
+					used += snprintf(text + used, sizeof(text) - used, " %s %.1f;", partNames[j], partTriangles[j] * 1e-3f * f);
+			host_log(text);
+			if (rwd3d11_counts_pixels()) {
+				used = snprintf(text, sizeof(text), "perf: %.2f screens of pixels a frame%s; in the game's parts:", frameScreens * f,
+				                rwd3d11_counts_pixels() == 2 ? ", hidden ones too (no depth test)" : " are drawn");
+				for (int32 j = 0; j < numParts && used < (int32)sizeof(text) - 40; j++)
+					if (partScreens[j] * f >= 0.005f)
+						used += snprintf(text + used, sizeof(text) - used, " %s %.2f;", partNames[j], partScreens[j] * f);
+				host_log(text);
+			}
+		}
+#endif
 		p.draws = p.immediates = 0;
 		p.inputNs = p.stateNs = p.drawNs = p.immediateNs = 0;
 		p.programs = p.uniforms = p.textures = p.samplers = p.vertexArrays = p.blends = p.depths = p.culls = 0;
 	}
 	numParts = numFrames = 0;
+	frameScreens = 0.0f;
 }
 
 // What a draw costs here (REVC_BENCH=1): through ANGLE, and through Direct3D 11 itself
@@ -202,8 +245,12 @@ SpareTheSlow(void)
 		return;
 	done = true;
 #ifdef RW_D3D11
-	// the Direct3D 11 renderer (w10m/rwd3d11): a GPU of Direct3D's level 9 is the slow kind
+	// the Direct3D 11 renderer (w10m/rwd3d11): a GPU of Direct3D's level 9 is the slow kind.
+	// REVC_SPARE=1 or 0: this phone is treated as one, or is not, whatever its level (to see
+	// on one phone what the treatment is worth apart from the level).
 	bool slow = rwd3d11_feature_level() < 100;
+	if (const char *spare = getenv("REVC_SPARE"))
+		slow = atoi(spare) != 0;
 	host_logf("w10m: Direct3D feature level %d.%d, shared buffers %s, atlases %s%s", rwd3d11_feature_level() / 10,
 	          rwd3d11_feature_level() % 10, rw::gl3::gl3Caps.sharedBuffers ? "yes" : "no",
 	          rw::gl3::gl3Caps.atlases ? "yes" : "no", slow ? "; sparing a slow phone" : "");
@@ -218,16 +265,18 @@ SpareTheSlow(void)
 	          rw::gl3::gl3Caps.sharedBuffers ? "yes" : "no", rw::gl3::gl3Caps.atlases ? "yes" : "no",
 	          slow ? "; sparing a slow phone" : "");
 #endif
+	// REVC_PS2_ALPHA=1 or 0: the PlayStation 2's alpha test (the display menu's setting, which
+	// draws everything that blends twice, once for the depth buffer) on or off for this run,
+	// on any phone. The game saves it with its settings when it next saves them.
+	const char *ps2 = getenv("REVC_PS2_ALPHA");
+	if (ps2)
+		gPS2alphaTest = atoi(ps2) != 0;
 	if (!slow) {
 		// REVC_PROGRAMS=few: the same on a phone that is not slow, to see what it is worth there
 		const char *programs = getenv("REVC_PROGRAMS");
 		rw::gl3::fewerPrograms = programs != nil && strcmp(programs, "few") == 0;
 		return;
 	}
-	// The PlayStation 2's alpha test draws everything that blends twice (once for the depth
-	// buffer): the PC game's own single pass instead. REVC_PS2_ALPHA=1 keeps it.
-	if (getenv("REVC_PS2_ALPHA") == nil)
-		gPS2alphaTest = false;
 	// One program for a pipeline, not the cheapest of four for every mesh: changing programs
 	// is the dearest thing between two draws here (librw, fewerPrograms). REVC_PROGRAMS=all
 	// keeps the four.
@@ -243,15 +292,26 @@ SpareTheSlow(void)
 		rw::gl3::fewerPrograms = 1;
 	if (programs && strcmp(programs, "noat") == 0)
 		rw::gl3::fewerPrograms = 3;
+#ifdef RW_D3D11
+	// The clouds after the world's houses, so that what a house hides of them is not drawn
+	// (core/main.cpp, RenderScene). REVC_SKY_FIRST=1: before them, as the game has it.
+	W10M_SkyAfterWorld = getenv("REVC_SKY_FIRST") == nil;
+#endif
 	// Vehicles in full detail up to 30 m instead of 70. REVC_FULL_DETAIL=1 keeps the 70.
 	if (getenv("REVC_FULL_DETAIL") == nil)
 		W10M_VehicleDetail = 0.43f;
-	// Two of the game's own settings, set once (its display menu has them, and what is
+	// Three of the game's own settings, set once (its display menu has them, and what is
 	// chosen there stays): the colour filter copies the whole picture into a texture every
 	// frame, which ANGLE on this kind of GPU does in 50 ms at 1280x720, so its plain variant,
-	// which does not; and the draw distance at its shortest.
+	// which does not; the draw distance at its shortest; and the PlayStation 2's alpha test
+	// off, the PC game's own single pass instead of two draws for everything that blends.
+	// (That one was set at every start once, whatever the menu said, and was saved with the
+	// settings of a phone that only tried REVC_SPARE=1 for a run: an Elite x3 had it so.)
+	// REVC_KEEP_SETTINGS=1: none of them, for a run that is to leave the game's settings alone.
 	uint8 spared = 0;
-	if (!ReadIniIfExists("W10M", "SlowPhoneDefaults", &spared) || !spared) {
+	if (getenv("REVC_KEEP_SETTINGS") == nil && (!ReadIniIfExists("W10M", "SlowPhoneDefaults", &spared) || !spared)) {
+		if (ps2 == nil)
+			gPS2alphaTest = false;
 		if (CPostFX::EffectSwitch == CPostFX::POSTFX_NORMAL || CPostFX::EffectSwitch == CPostFX::POSTFX_MOBILE)
 			CPostFX::EffectSwitch = CPostFX::POSTFX_SIMPLE;
 		FrontEndMenuManager.m_PrefsLOD = 0.925f;
@@ -315,6 +375,68 @@ reVC_W10M_SkipCutscenes(void)
 	gSkipCutscenes = true;
 }
 
+// A run that drives itself (REVC_KEYS=...,d@30): from then on the player's car is driven as
+// the traffic's cars are, along the roads and round what is on them, and a player who has no
+// car is put behind the wheel of the nearest. Keys held by the clock (87@60-65.5) end in a
+// wall as soon as the game is a little quicker or slower than where they were timed.
+static bool gDriveItself;
+
+extern "C" void
+reVC_W10M_DriveItself(void)
+{
+	gDriveItself = true;
+}
+
+static void
+DriveItself(void)
+{
+	CPlayerPed *player = FindPlayerPed();
+	if (player == nil || gGameState != GS_PLAYING_GAME || CCutsceneMgr::IsRunning() ||
+	    FrontEndMenuManager.GetIsMenuActive() || player->DyingOrDead())
+		return;
+
+	if (!player->InVehicle()) {
+		// once a second: the nearest car nobody drives, within 40 m
+		static uint32 looked;
+		uint32 now = CTimer::GetTimeInMilliseconds();
+		if (now - looked < 1000)
+			return;
+		looked = now;
+		CVehicle *nearest = nil;
+		float best = 40.0f * 40.0f;
+		for (int32 i = CPools::GetVehiclePool()->GetSize() - 1; i >= 0; i--) {
+			CVehicle *v = CPools::GetVehiclePool()->GetSlot(i);
+			if (v == nil || !v->IsCar() || v->pDriver || v->GetStatus() == STATUS_WRECKED)
+				continue;
+			float d = (v->GetPosition() - player->GetPosition()).MagnitudeSqr();
+			if (d < best) {
+				best = d;
+				nearest = v;
+			}
+		}
+		if (nearest) {
+			player->SetObjective(OBJECTIVE_ENTER_CAR_AS_DRIVER, nearest);
+			player->WarpPedIntoCar(nearest);
+			host_log("w10m: the run drives itself: the player is put into the nearest car");
+		}
+		return;
+	}
+
+	CVehicle *car = player->m_pMyVehicle;
+	if (car == nil || car->pDriver != player || !car->IsCar())
+		return;
+	if (car->GetStatus() != STATUS_PHYSICS || car->AutoPilot.m_nCarMission != MISSION_CRUISE) {
+		CCarCtrl::JoinCarWithRoadSystem(car);
+		car->AutoPilot.m_nCarMission = MISSION_CRUISE;
+		car->AutoPilot.m_nDrivingStyle = DRIVINGSTYLE_AVOID_CARS;
+		car->AutoPilot.m_nCruiseSpeed = 20;
+		car->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
+		car->SetStatus(STATUS_PHYSICS);
+		car->bEngineOn = true;
+		host_log("w10m: the run drives itself: the player's car goes with the traffic");
+	}
+}
+
 extern "C" int32
 reVC_W10M_Frame(void)
 {
@@ -322,6 +444,8 @@ reVC_W10M_Frame(void)
 	int32 requests = host_take_requests();
 	if (gSkipCutscenes)
 		requests |= HOST_REQUEST_SKIP_CUTSCENE;
+	if (gDriveItself)
+		DriveItself();
 
 	// The skip button ends the cutscene itself instead of pressing Cross for a frame:
 	// CCutsceneMgr::Update() looks at the pad only in some camera modes and load states, and a

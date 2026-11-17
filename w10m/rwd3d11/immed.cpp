@@ -31,12 +31,17 @@ namespace gl3 {
 uint32 im2DVbo, im2DIbo;	// the OpenGL renderer's, for its callers
 
 Shader *im2dOverrideShader;
+// what is drawn in two dimensions lies behind everything drawn so far (see drawIm2D)
+static bool32 im2dBehind;
+static Shader *im2dBehindShader;
 
-enum
-{
-	STREAM_VERTEX_BYTES = 1<<20,
-	STREAM_INDICES = 1<<17
-};
+void im2dBehindOn(bool32 on) { im2dBehind = on; }
+
+// The two buffers immediate mode writes along. With a drawing thread they are begun anew for
+// every list of calls (a deferred context discards a buffer before it writes on in it, and
+// keeps the whole of a discarded buffer for the thread), so they are smaller there.
+static uint32 STREAM_VERTEX_BYTES = 1<<20;
+static uint32 STREAM_INDICES = 1<<17;
 
 static ID3D11Buffer *streamVertices, *streamIndices;
 static uint32 vertexAt;	// bytes
@@ -123,9 +128,19 @@ putIndices(const uint16 *indices, int32 *numIndices, bool32 fan)
 	return first;
 }
 
+void
+freshStreams(void)
+{
+	vertexFresh = indexFresh = 1;
+}
+
 static bool32
 openStreams(void)
 {
+	if(d3d.threaded){
+		STREAM_VERTEX_BYTES = 1<<19;
+		STREAM_INDICES = 1<<16;
+	}
 	D3D11_BUFFER_DESC bd;
 	memset(&bd, 0, sizeof(bd));
 	bd.Usage = D3D11_USAGE_DYNAMIC;
@@ -170,6 +185,8 @@ drawStream(PrimitiveType primType, int32 first, int32 numVertices, uint32 stride
 {
 	if(first < 0)
 		return;
+	// what is not geometry comes after everything of the geometry before it
+	drawLater();
 	bool32 fan = primType == PRIMTYPETRIFAN;
 	int32 firstIndex = -1;
 	if(indices || fan){
@@ -183,6 +200,7 @@ drawStream(PrimitiveType primType, int32 first, int32 numVertices, uint32 stride
 	setTopology(fan ? GL_TRIANGLES : primTypeMap[primType]);
 	if(!readyToDraw())
 		return;
+	countDraw(firstIndex >= 0 ? numIndices : numVertices);
 	if(firstIndex >= 0)
 		d3d.context->DrawIndexed(numIndices, firstIndex, first);
 	else
@@ -194,6 +212,7 @@ openIm2D(void)
 {
 	im2dShader = Shader::create("im2d", "simple");
 	assert(im2dShader);
+	im2dBehindShader = Shader::create("im2d", "simple_masked");
 	im2dFormat = formatOf(im2dattribDesc, 3);
 	openStreams();
 }
@@ -206,6 +225,10 @@ closeIm2D(void)
 	release(streamVertices);
 	im2dShader->destroy();
 	im2dShader = nil;
+	if(im2dBehindShader){
+		im2dBehindShader->destroy();
+		im2dBehindShader = nil;
+	}
 }
 
 static Im2DVertex tmpprimbuf[3];
@@ -229,18 +252,53 @@ im2DRenderTriangle(void *vertices, int32 numVertices, int32 vert1, int32 vert2, 
 	im2DRenderPrimitive(PRIMTYPETRILIST, tmpprimbuf, 3);
 }
 
-void
-im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
+// ===[ What lies behind everything, drawn after it ]===
+// The game draws its sky first, over the whole picture, and the world over it: in a street
+// one and a half pictures' worth of clouds of which a third is seen in the end, every pixel
+// of them worked out (a Lumia 650: 3.1 ms a picture's worth at 1280x720). Drawn after the
+// world's houses instead, at the far end of the depth buffer and tested against it, the
+// pixels a house hides are given up before they are worked out (0.5 ms), if the shader does
+// not throw pixels away: simple_masked does the alpha test's work without. The game says
+// when (rwd3d11_draw_behind); what is drawn in between is drawn so whatever depth and
+// whatever test it asks for itself, and writes no depth.
+static void
+drawIm2D(PrimitiveType primType, void *vertices, int32 numVertices, void *indices, int32 numIndices)
 {
 	uint64 t0 = perf.enabled ? perfNow() : 0;
+	Im2DVertex *moved = nil;
+	uint32 ztest = 0, zwrite = 0;
+	if(im2dBehind && numVertices > 0){
+		moved = (Im2DVertex*)rwMalloc(numVertices*sizeof(Im2DVertex), MEMDUR_FUNCTION | ID_DRIVER);
+		memcpy(moved, vertices, numVertices*sizeof(Im2DVertex));
+		for(int32 i = 0; i < numVertices; i++)
+			moved[i].z = 1.0f;
+		vertices = moved;
+		ztest = rw::GetRenderState(rw::ZTESTENABLE);
+		zwrite = rw::GetRenderState(rw::ZWRITEENABLE);
+		rw::SetRenderState(rw::ZTESTENABLE, 1);
+		rw::SetRenderState(rw::ZWRITEENABLE, 0);
+	}
 	if(im2dOverrideShader)
 		im2dOverrideShader->use();
+	else if(moved && im2dBehindShader)
+		im2dBehindShader->use();
 	else
 		im2dShader->use();
 	im2DSetXform();
 	drawStream(primType, putVertices(vertices, numVertices, sizeof(Im2DVertex)), numVertices, sizeof(Im2DVertex),
-		im2dFormat, im2dattribDesc, 3, nil, 0);
+		im2dFormat, im2dattribDesc, 3, (uint16*)indices, numIndices);
+	if(moved){
+		rw::SetRenderState(rw::ZTESTENABLE, ztest);
+		rw::SetRenderState(rw::ZWRITEENABLE, zwrite);
+		rwFree(moved);
+	}
 	immediateDone(t0);
+}
+
+void
+im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
+{
+	drawIm2D(primType, vertices, numVertices, nil, 0);
 }
 
 void
@@ -248,15 +306,7 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
 	void *vertices, int32 numVertices,
 	void *indices, int32 numIndices)
 {
-	uint64 t0 = perf.enabled ? perfNow() : 0;
-	if(im2dOverrideShader)
-		im2dOverrideShader->use();
-	else
-		im2dShader->use();
-	im2DSetXform();
-	drawStream(primType, putVertices(vertices, numVertices, sizeof(Im2DVertex)), numVertices, sizeof(Im2DVertex),
-		im2dFormat, im2dattribDesc, 3, (uint16*)indices, numIndices);
-	immediateDone(t0);
+	drawIm2D(primType, vertices, numVertices, indices, numIndices);
 }
 
 // with the shader, the states, the uniforms and the texture that are set (device.cpp)
@@ -266,8 +316,10 @@ im2DDrawStrip(Im2DVertex *vertices, int32 numVertices)
 	int32 first = putVertices(vertices, numVertices, sizeof(Im2DVertex));
 	if(first < 0)
 		return;
+	drawLater();
 	setVertexInput(streamVertices, sizeof(Im2DVertex), streamIndices, im2dFormat, im2dattribDesc, 3);
 	setTopology(GL_TRIANGLE_STRIP);
+	bindShaders();
 	if(setInputLayout(im2dFormat, im2dattribDesc, 3))
 		d3d.context->Draw(numVertices, first);
 }
@@ -372,4 +424,10 @@ im3DEnd(void)
 }
 
 }
+}
+
+extern "C" void
+rwd3d11_draw_behind(int on)
+{
+	rw::gl3::im2dBehindOn(on != 0);
 }
