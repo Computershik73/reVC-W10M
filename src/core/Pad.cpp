@@ -3356,8 +3356,32 @@ int16 CPad::SniperModeLookUpDown(void)
 		return dpad;
 }
 
+#ifdef GTA_W10M
+// How fast the right stick turns the camera on foot (the mouse camera, the one of the standard
+// controls): nothing within the dead zone round the middle (glfw.cpp, 0.3 of the way), then the
+// square of how far past it the stick is, along the stick's direction, up to the 171 that the
+// game's own curve below reaches at the edge. That curve gave a third of the full speed for the
+// least push past the dead zone, rose to 149 by two thirds of the way, fell to 4 just past that
+// and climbed to 171 again: a thumb on the screen's stick could not turn the camera slowly, nor
+// speed it up evenly. Upward and downward it began only at 40 of the 128.
+static int16
+LookAroundSpeed(float axis, float other)
+{
+	float x = axis / 128.0f, y = other / 128.0f;
+	float length = Sqrt(x * x + y * y);
+	if (length <= 0.3f)
+		return 0;
+	float past = Min((length - 0.3f) / 0.7f, 1.0f);
+	return (int16)(171.0f * past * past * x / length);
+}
+#endif
+
 int16 CPad::LookAroundLeftRight(void)
 {
+#ifdef GTA_W10M
+	if (TheCamera.Cams[0].Using3rdPersonMouseCam())
+		return LookAroundSpeed(GetPad(0)->NewState.RightStickX, GetPad(0)->NewState.RightStickY);
+#endif
 	float axis = GetPad(0)->NewState.RightStickX;
 
 	if ( Abs(axis) > 85 && !GetLookBehindForPed() )
@@ -3379,6 +3403,10 @@ int16 CPad::LookAroundUpDown(void)
 #endif
 	if (CPad::bInvertLook4Pad)
 		axis = -axis;
+#ifdef GTA_W10M
+	if (TheCamera.Cams[0].Using3rdPersonMouseCam())
+		return LookAroundSpeed(axis, GetPad(0)->NewState.RightStickX);
+#endif
 
 	if ( Abs(axis) > 85 && !GetLookBehindForPed() )
 		return (int16) ( (axis + ( ( axis > 0 ) ? -85 : 85) )

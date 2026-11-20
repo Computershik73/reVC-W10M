@@ -2617,11 +2617,21 @@ void CapturePad(RwInt32 padID)
 		if ( Abs(leftStickPos.y)  > 0.3f )
 			pad->PCTempJoyState.LeftStickY	= (int32)(leftStickPos.y  * 128.0f);
 		
+#ifdef GTA_W10M
+		// The right stick turns the camera: its dead zone is round the middle, not along each
+		// axis, so that a slanted push turns the camera on the slant and not along the larger
+		// of its two parts alone (CPad::LookAroundLeftRight)
+		if ( rightStickPos.x * rightStickPos.x + rightStickPos.y * rightStickPos.y > 0.3f * 0.3f ) {
+			pad->PCTempJoyState.RightStickX = (int32)(rightStickPos.x * 128.0f);
+			pad->PCTempJoyState.RightStickY = (int32)(rightStickPos.y * 128.0f);
+		}
+#else
 		if ( Abs(rightStickPos.x) > 0.3f )
 			pad->PCTempJoyState.RightStickX = (int32)(rightStickPos.x * 128.0f);
 
 		if ( Abs(rightStickPos.y) > 0.3f )
 			pad->PCTempJoyState.RightStickY = (int32)(rightStickPos.y * 128.0f);
+#endif
 	}
 
 	_psHandleVibration();

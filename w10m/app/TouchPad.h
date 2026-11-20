@@ -259,7 +259,9 @@ private:
 
     // Deflection of a stick from where the finger landed. The game's own dead zone is 0.3 of
     // the range (skel/glfw/glfw.cpp): past a small dead zone here the output starts above it,
-    // so that a short move of the thumb already walks, or turns the camera slowly.
+    // so that a short move of the thumb already walks, or begins to turn the camera. How fast
+    // the camera turns is the game's (CPad::LookAroundLeftRight): the square of how far past
+    // the dead zone, from almost nothing at the middle to the full speed at the ring.
     void Steer(Stick& stick, winrt::Windows::Foundation::Point p) {
         double reach = stickRadius_ > 0 ? stickRadius_ : 1;
         double dx = (p.X - stick.origin.X) / reach, dy = (p.Y - stick.origin.Y) / reach;

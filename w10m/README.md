@@ -658,8 +658,13 @@ three places the Android fork changed for touch, the gamepad menu with PlayStati
 default type, the radio taking a step from the pad's two radio buttons (a gamepad has one, and
 only forward), the American text standing in for lines a language's file lacks (reVC's own
 menu entries are not in its Russian file and read "FET_AGS missing"), the debug timers around
-the parts of the scene, read out for the log, and what a slow phone is spared (the copy of the
-picture for rain drops when there are none, the distance to which vehicles are drawn in full).
+the parts of the scene, read out for the log, what a slow phone is spared (the copy of the
+picture for rain drops when there are none, the distance to which vehicles are drawn in full),
+and how fast the right stick turns the camera on foot (`CPad::LookAroundLeftRight`, with a
+dead zone round the middle in the skeleton): the game's own curve turned the camera at 113
+degrees a second for a tenth of the screen stick's push, at 265 by a little over half, at 34
+just past that and at 304 at the edge; now it is the square of the push past the dead zone,
+5 degrees a second at a fifth, 64 at a half, 306 at the edge.
 
 ## Build
 
