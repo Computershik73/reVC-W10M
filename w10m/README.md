@@ -867,8 +867,22 @@ takes it away again, which is not to be forgotten: they stay until removed.
 | `REVC_PAD_PREVIEW=menu` (`foot`, `vehicle`, `cutscene`; `vehicle-xbox`...) | the pad as it is in that part of the game, without a game, with Xbox's names for `-xbox`: with the snapshot, a look at its layout from the PC |
 | `ALSOFT_LOGLEVEL=3` | OpenAL Soft says what it does, into the log |
 
+## Windows Phone 8.1
+
+In the branch `wp81` (this branch, `w10m`, with the 8.1 port added) the same sources build for
+Windows Phone 8.1 as well, in a build of its own that this one neither uses nor is changed by: `python w10m/wp81/build_game.py` (its own CMakeLists.txt and
+toolchain file in `wp81/`, its own folders under `work/wp81`) makes
+`work/wp81/packages/reVC81_<version>_ARM.appx`, one program with the C runtime, OpenAL Soft and
+mpg123 linked into it, linked against nothing but the 8.1 kit. The sources' few differences for
+8.1 (the folder picker that comes back as an activation, the Back key, no full screen mode, no
+gamepad, the log sent through the share screen, XAudio2 2.8 first) are marked `REVC_WP81`. What
+differs, what has been checked and how to test it on the emulator:
+[`wp81/README.md`](wp81/README.md).
+
 ## Licences
 
 The game's code: `LICENSE.md` at the root of the repository. What else is in the package and
 under which terms: [`app/THIRD-PARTY.txt`](app/THIRD-PARTY.txt). OpenAL Soft and mpg123 are
-LGPL and are separate DLLs. Not made or endorsed by Rockstar Games or Take-Two Interactive.
+LGPL and are separate DLLs (in the Windows Phone 8.1 package they are linked in; their source,
+the program's and the build are here, to link it again with other builds of them). Not made or
+endorsed by Rockstar Games or Take-Two Interactive.

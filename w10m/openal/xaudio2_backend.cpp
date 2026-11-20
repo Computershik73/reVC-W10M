@@ -57,7 +57,12 @@ bool LoadXAudio2()
 {
     if(gXAudio2Create)
         return true;
+#ifdef REVC_WP81
+    /* Windows Phone 8.1 has 2.8 alone, and this build's xaudio2.h is 2.8's (_WIN32_WINNT 8.1) */
+    for(const WCHAR *name : {L"XAudio2_8.dll", L"XAudio2_9.dll"})
+#else
     for(const WCHAR *name : {L"XAudio2_9.dll", L"XAudio2_8.dll"})
+#endif
     {
         HMODULE module{LoadLibraryExW(name, nullptr, 0)};
         if(!module)

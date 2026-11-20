@@ -45,9 +45,15 @@ public:
         column_.HorizontalAlignment(HorizontalAlignment::Stretch);
 
         column_.Children().Append(Text(L"reVC", 32, 0xFFFF6EC7, true));
+#ifdef REVC_WP81
+        column_.Children().Append(Text(T(L"Grand Theft Auto: Vice City, reverse-engineered, on Windows Phone 8.1",
+                                         L"Grand Theft Auto: Vice City (обратная разработка) на Windows Phone 8.1"),
+                                       14, 0xB3FFFFFF));
+#else
         column_.Children().Append(Text(T(L"Grand Theft Auto: Vice City, reverse-engineered, on Windows 10 Mobile",
                                          L"Grand Theft Auto: Vice City (обратная разработка) на Windows 10 Mobile"),
                                        14, 0xB3FFFFFF));
+#endif
 
         notice_ = Text(L"", 15, 0xFFFFC66B);
         notice_.Margin({0, 16, 0, 0});
@@ -117,9 +123,15 @@ public:
     // game's code is. At the foot of this screen, and over the game from "About the port" in
     // its Options menu (App.cpp): on a dark background in both places.
     static void Credits(winrt::Windows::UI::Xaml::Controls::Panel const& column) {
+#ifdef REVC_WP81
+        auto ported = Text(T(L"Ported to Windows 10 Mobile and Windows Phone 8.1 by Computershik",
+                             L"Порт на Windows 10 Mobile и Windows Phone 8.1: Computershik"),
+                           15, 0xFFFFFFFF);
+#else
         auto ported = Text(T(L"Ported to Windows 10 Mobile by Computershik",
                              L"Порт на Windows 10 Mobile: Computershik"),
                            15, 0xFFFFFFFF);
+#endif
         ported.Margin({0, 24, 0, 0});
         column.Children().Append(ported);
         column.Children().Append(Text(T(L"Porting, building and debugging on the device.",
@@ -184,6 +196,18 @@ public:
     }
 
     bool Visible() const { return root_.Visibility() == winrt::Windows::UI::Xaml::Visibility::Visible; }
+
+#ifdef REVC_WP81
+    // Windows Phone 8.1 has no Device Portal to take the log from: a button for the phone's
+    // share screen, under the progress line
+    void ShareButton(Sink share) {
+        auto button = MakeButton(T(L"Send the log", L"Отправить журнал"));
+        button.Click([share](auto const&, auto const&) { share(); });
+        uint32_t at = 0;
+        if (column_.Children().IndexOf(status_, at)) column_.Children().InsertAt(at + 1, button);
+        else column_.Children().Append(button);
+    }
+#endif
 
     // The window's width and where the status and navigation bars cover it
     void Place(double width, winrt::Windows::UI::Xaml::Thickness insets) {
@@ -348,11 +372,23 @@ private:
     static winrt::Windows::Foundation::IAsyncOperation<bool> Has(winrt::Windows::Storage::StorageFolder folder,
                                                                  const wchar_t* sub, const wchar_t* file) {
         using namespace winrt::Windows::Storage;
+#ifdef REVC_WP81
+        // a phone with 8.1 has no TryGetItemAsync: what is not there throws
+        bool found = false;
+        try {
+            auto inner = co_await folder.GetFolderAsync(sub);
+            auto item = co_await inner.GetFileAsync(file);
+            found = item != nullptr;
+        } catch (winrt::hresult_error const&) {
+        }
+        co_return found;
+#else
         auto item = co_await folder.TryGetItemAsync(sub);
         auto inner = item ? item.try_as<StorageFolder>() : nullptr;
         if (!inner) co_return false;
         auto found = co_await inner.TryGetItemAsync(file);
         co_return found && found.IsOfType(StorageItemTypes::File);
+#endif
     }
 
     // ===[ Taking the game in ]===
@@ -570,6 +606,31 @@ private:
         else Open(L"");
     }
 
+#ifdef REVC_WP81
+    // Windows Phone 8.1 has no PickSingleFolderAsync: the picker takes the phone from the app,
+    // which is suspended (or ended), and the folder comes back as an activation of its own
+    // (App::OnActivated, then Take)
+    void Import() {
+        using namespace winrt::Windows::Storage;
+        if (busy_) return;
+        try {
+            Pickers::FolderPicker picker;
+            picker.SuggestedStartLocation(Pickers::PickerLocationId::DocumentsLibrary);
+            picker.FileTypeFilter().Append(L"*");
+            log_("files: the folder picker is up");
+            picker.PickFolderAndContinue();
+        } catch (winrt::hresult_error const& e) {
+            log_("files: folder picker failed, " + Hex(e.code()));
+        }
+    }
+
+public:
+    // The folder the player picked
+    winrt::fire_and_forget Take(winrt::Windows::Storage::StorageFolder source) {
+        using namespace winrt::Windows::Storage;
+        if (!source || busy_) co_return;
+        log_("files: picked " + Utf8(std::wstring(source.Path())));
+#else
     winrt::fire_and_forget Import() {
         using namespace winrt::Windows::Storage;
         if (busy_) co_return;
@@ -583,6 +644,7 @@ private:
             log_("files: folder picker failed, " + Hex(e.code()));
         }
         if (!source || busy_) co_return;
+#endif
 
         bool valid = false;
         try {
@@ -608,6 +670,9 @@ private:
         co_await CopyFrom(source);
     }
 
+#ifdef REVC_WP81
+private:
+#endif
     winrt::fire_and_forget Resume() {
         using namespace winrt::Windows::Storage;
         if (busy_) co_return;

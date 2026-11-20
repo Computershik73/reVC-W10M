@@ -39,6 +39,18 @@ extern "C" __declspec(dllimport) void angle_uwp_set_panel_scale(float x, float y
 extern "C" __declspec(dllimport) void angle_uwp_set_logger(void (*logger)(const char*));
 #endif
 
+#ifdef REVC_WP81
+// Windows Phone 8.1 (w10m/wp81): the phone's Back key, the device's name, the share screen
+// for the log, and where the functions its kit lacks were found (wp81/stubs_game.cpp)
+#include <winrt/Windows.ApplicationModel.DataTransfer.h>
+#include <winrt/Windows.Security.ExchangeActiveSyncProvisioning.h>
+#include "BackKey81.h"
+extern "C" void wp81_system_report(char* text, size_t size);
+#define REVC_PLATFORM "Windows Phone 8.1"
+#else
+#define REVC_PLATFORM "Windows 10 Mobile"
+#endif
+
 namespace {
 
 using revc::T;
@@ -49,6 +61,12 @@ using revc::Utf8;
 std::mutex gLogLock, gLogFileLock;
 std::wstring gLogPath;
 std::string gLogPending;
+#ifdef REVC_WP81
+// REVC_LOG_MIRROR=1 (a test package's): the log in TempState as well, where ISETool takes it
+// from by itself while the game holds its own files open (it copies nothing of a folder with
+// a file another process has open)
+std::wstring gLogMirror;
+#endif
 
 // The file is opened, appended to and closed each time: the Device Portal refuses (404) a file
 // another process holds open for writing, whatever its sharing flags, so this keeps the log
@@ -70,6 +88,14 @@ void LogFlush() {
     DWORD n = 0;
     ::WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &n, nullptr);
     ::CloseHandle(h);
+#ifdef REVC_WP81
+    if (!gLogMirror.empty()) {
+        h = ::CreateFile2(gLogMirror.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_ALWAYS, &p);
+        if (h == INVALID_HANDLE_VALUE) return;
+        ::WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &n, nullptr);
+        ::CloseHandle(h);
+    }
+#endif
 }
 
 void LogOpen(const std::wstring& folder) {
@@ -584,6 +610,15 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
             gLocalFolder = local_;
             LogOpen(local_);
             std::string family = "?", os = "?";
+#ifdef REVC_WP81
+            // 8.1 has no AnalyticsInfo: the phone's maker, model and firmware
+            try {
+                winrt::Windows::Security::ExchangeActiveSyncProvisioning::EasClientDeviceInformation info;
+                family = Utf8(std::wstring(info.SystemManufacturer())) + " " + Utf8(std::wstring(info.SystemProductName()));
+                os = "firmware " + Utf8(std::wstring(info.SystemFirmwareVersion()));
+            } catch (...) {
+            }
+#else
             try {
                 auto info = winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo();
                 family = Utf8(std::wstring(info.DeviceFamily()));
@@ -592,13 +627,38 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                      std::to_string((ver >> 16) & 0xFFFF) + "." + std::to_string(ver & 0xFFFF);
             } catch (...) {
             }
+#endif
             auto v = Package::Current().Id().Version();
             version = std::to_wstring(v.Major) + L"." + std::to_wstring(v.Minor) + L"." + std::to_wstring(v.Build) +
                       L"." + std::to_wstring(v.Revision);
-            Log("shell: reVC for Windows 10 Mobile " + Utf8(version) + " on " + family + " " + os);
+            Log("shell: reVC for " REVC_PLATFORM " " + Utf8(version) + " on " + family + " " + os);
+#ifdef REVC_WP81
+            {
+                char report[512] = "";
+                wp81_system_report(report, sizeof(report));
+                Log(std::string("shell: functions 8.1's kit lacks, from the phone: ") + report);
+                using winrt::Windows::System::MemoryManager;
+                Log("shell: an app may have " + std::to_string(MemoryManager::AppMemoryUsageLimit() >> 20) + " MB here");
+            }
+#endif
             CaptureOutput(local_);
             _putenv_s("ALSOFT_LOGLEVEL", "2");  // OpenAL Soft's warnings and errors, into the log
             ReadEnvironment(local_);
+#ifdef REVC_WP81
+            // and a test package's own (wp81/build_game.py --test): files put into LocalState from
+            // the PC (ISETool) are the app's no more, and 8.1 has no Device Portal
+            ReadEnvironment(std::wstring(Package::Current().InstalledLocation().Path()) + L"\\testenv");
+            if (_wgetenv(L"REVC_LOG_MIRROR")) {
+                std::wstring mirror =
+                    std::wstring(winrt::Windows::Storage::ApplicationData::Current().TemporaryFolder().Path()) + L"\\revc.log";
+                LogFlush();
+                COPYFILE2_EXTENDED_PARAMETERS copy{};
+                copy.dwSize = sizeof(copy);
+                ::CopyFile2((local_ + L"\\revc.log").c_str(), mirror.c_str(), &copy);  // what is there so far
+                std::lock_guard<std::mutex> file(gLogFileLock);
+                gLogMirror = mirror;
+            }
+#endif
             // the first T() is after this: REVC_LANG is among those settings
             Log("shell: the phone's language is " + Utf8(PhoneLanguage()) + ", the shell speaks " +
                 (Russian() ? "Russian" : "English"));
@@ -658,7 +718,39 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
     }
 
     void OnLaunched(LaunchActivatedEventArgs const&) {
-        if (!Window::Current().Content()) {
+        if (!Window::Current().Content()) Build(false);
+        Window::Current().Activate();
+    }
+
+#ifdef REVC_WP81
+    // Windows Phone 8.1's folder picker takes the phone from the app (PickFolderAndContinue,
+    // GameFiles::Import): the folder comes back as an activation of its own. The app may have
+    // been ended meanwhile, and then this is its start: with the files screen, not the game.
+    void OnActivated(IActivatedEventArgs const& args) {
+        bool picked = args.Kind() == ActivationKind::PickFolderContinuation;
+        Log(std::string("shell: activated, ") + (picked ? "back from the folder picker" : "kind " + std::to_string(static_cast<int>(args.Kind()))));
+        if (!Window::Current().Content()) Build(picked);
+        Window::Current().Activate();
+        if (!picked || !files_) return;
+        winrt::Windows::Storage::StorageFolder folder{nullptr};
+        try {
+            folder = args.as<FolderPickerContinuationEventArgs>().Folder();
+        } catch (winrt::hresult_error const& e) {
+            Log("shell: the picked folder could not be had, " + std::to_string(e.code().value));
+        }
+        if (!folder) {
+            Log("shell: no folder was picked");
+            return;
+        }
+        if (!files_->Visible()) files_->Open(L"");
+        files_->Take(folder);
+    }
+#endif
+
+    // The window's content, once: the panel, the pad, the files screen; then the game or that
+    // screen. continuing: back from 8.1's folder picker, which is the files screen's.
+    void Build(bool continuing) {
+        {
             top_ = Grid();
             top_.Background(Brush(0xFF000000));
             root_ = Canvas();
@@ -681,10 +773,12 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                 [](int32_t request) { gRequests.fetch_or(request); }, [this] { NextResolution(); });
             touch_->ResolutionLabel(ResolutionLabel());
 
+#ifndef REVC_WP81  // Windows.Gaming.Input is Windows 10's: on 8.1 the pad on the screen alone
             gamepad_ = std::make_unique<Gamepad>([this](bool connected) {
                 Log(connected ? "shell: a gamepad is connected" : "shell: the gamepad is gone");
             });
             gGamepad = gamepad_.get();
+#endif
 
             gFatal = [this](std::string text) {
                 top_.Dispatcher().RunAsync(CoreDispatcherPriority::High, [this, text] { Fatal(text); });
@@ -717,6 +811,9 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
 
             std::wstring package = std::wstring(Package::Current().InstalledLocation().Path());
             files_ = std::make_unique<GameFiles>(top_, local_, package, version_, [this] { Play(); }, Log);
+#ifdef REVC_WP81
+            files_->ShareButton([this] { ShareLog(); });
+#endif
 
             HookPanel();
             HookWindow();
@@ -730,18 +827,34 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                 Presentation();
                 // The marker of a start that never got to the game's menu: ask before trying again
                 // REVC_FILES_SCREEN=1: the files screen though the game is there (=end: its foot)
-            } else if (!_wgetenv(L"REVC_FILES_SCREEN") && files_->Present() && !FileExists(starting_) &&
+            } else if (!continuing && !_wgetenv(L"REVC_FILES_SCREEN") && files_->Present() && !FileExists(starting_) &&
                        files_->Overlay()) {
                 Play();
             } else {
-                files_->Open(FileExists(starting_) && files_->Present()
-                                 ? T(L"The game did not get as far as its menu last time. Try again, or replace the "
-                                     L"game's files if they are incomplete or modified. revc.log in the app's "
-                                     L"folder says what happened.",
-                                     L"В прошлый раз игра не дошла до своего меню. Попробуйте ещё раз или замените "
-                                     L"файлы игры, если они неполные или изменены. Что произошло, записано в "
-                                     L"revc.log в папке приложения.")
-                                 : L"");
+                std::wstring notice = FileExists(starting_) && files_->Present()
+                                          ? T(L"The game did not get as far as its menu last time. Try again, or replace the "
+                                              L"game's files if they are incomplete or modified. revc.log in the app's "
+                                              L"folder says what happened.",
+                                              L"В прошлый раз игра не дошла до своего меню. Попробуйте ещё раз или замените "
+                                              L"файлы игры, если они неполные или изменены. Что произошло, записано в "
+                                              L"revc.log в папке приложения.")
+                                          : L"";
+#ifdef REVC_WP81
+                // a phone with 512 MB gives an app about 185 MB, and the game needs about 220
+                try {
+                    uint64_t limit = winrt::Windows::System::MemoryManager::AppMemoryUsageLimit() >> 20;
+                    if (limit < 300)
+                        notice += (notice.empty() ? L"" : L"\n\n") +
+                                  std::wstring(T(L"This phone gives an app ", L"Этот телефон даёт приложению ")) +
+                                  std::to_wstring(limit) +
+                                  T(L" MB of memory, and the game needs about 220 MB: the phone will most likely close "
+                                    L"it. Phones with 1 GB of memory or more give enough.",
+                                    L" МБ памяти, а игре нужно около 220 МБ: скорее всего, телефон её закроет. "
+                                    L"Телефоны с 1 ГБ памяти и больше дают достаточно.");
+                } catch (...) {
+                }
+#endif
+                files_->Open(notice);
                 Presentation();
                 if (const wchar_t* shown = _wgetenv(L"REVC_FILES_SCREEN")) {
                     if (wcscmp(shown, L"end") == 0) {
@@ -762,9 +875,30 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
             tick_.Interval(std::chrono::milliseconds(100));
             tick_.Tick([this](auto const&, auto const&) { Tick(); });
             tick_.Start();
+#ifdef REVC_WP81
+            // REVC_PICKED=name: as if LocalState\name had come back from the folder picker, for a
+            // run on the emulator with nobody to tap it (an env.* file, ReadEnvironment)
+            if (const wchar_t* picked = _wgetenv(L"REVC_PICKED")) TakeLocal(picked);
+#endif
         }
-        Window::Current().Activate();
     }
+
+#ifdef REVC_WP81
+    // LocalState\name, or the package's (a test package carries a game folder: testsrc)
+    winrt::fire_and_forget TakeLocal(std::wstring name) {
+        auto lifetime = get_strong();
+        try {
+            std::wstring path = local_ + L"\\" + name;
+            if (!FileExists(path)) path = std::wstring(Package::Current().InstalledLocation().Path()) + L"\\" + name;
+            auto folder = co_await winrt::Windows::Storage::StorageFolder::GetFolderFromPathAsync(path);
+            Log("shell: REVC_PICKED " + Utf8(name) + ": as if the folder picker had given it");
+            if (!files_->Visible()) files_->Open(L"");
+            files_->Take(folder);
+        } catch (winrt::hresult_error const& e) {
+            Log("shell: REVC_PICKED " + Utf8(name) + " is not to be had, " + std::to_string(e.code().value));
+        }
+    }
+#endif
 
     void Play() {
         files_->Close();
@@ -936,6 +1070,18 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
             close.Margin({0, 8, 16, 0});
             close.Click([this](auto const&, auto const&) { CloseAbout(); });
             about_.Children().Append(close);
+#ifdef REVC_WP81
+            // the log from the middle of a game, for a tester
+            Button share;
+            share.Content(winrt::box_value(winrt::hstring(T(L"Send the log", L"Отправить журнал"))));
+            share.FontSize(16);
+            share.Height(44);
+            share.HorizontalAlignment(HorizontalAlignment::Right);
+            share.VerticalAlignment(VerticalAlignment::Top);
+            share.Margin({0, 8, 140, 0});
+            share.Click([this](auto const&, auto const&) { ShareLog(); });
+            about_.Children().Append(share);
+#endif
 
             about_.Visibility(Visibility::Collapsed);
             stage_.Children().Append(about_);
@@ -1060,12 +1206,22 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
         }
         try {
             auto view = ApplicationView::GetForCurrentView();
+#ifdef REVC_WP81
+            // 8.1 has no full screen mode: the window goes under the status bar (hidden below)
+            // and the navigation bar instead
+            view.SetDesiredBoundsMode(game ? ApplicationViewBoundsMode::UseCoreWindow : ApplicationViewBoundsMode::UseVisible);
+#else
             if (game) view.TryEnterFullScreenMode();
             else if (view.IsFullScreenMode()) view.ExitFullScreenMode();
+#endif
         } catch (...) {
         }
         try {
+#ifdef REVC_WP81
+            if (true) {  // a phone's: there is always one (ApiInformation is Windows 10's)
+#else
             if (winrt::Windows::Foundation::Metadata::ApiInformation::IsTypePresent(L"Windows.UI.ViewManagement.StatusBar")) {
+#endif
                 auto bar = StatusBar::GetForCurrentView();
                 if (game) {
                     bar.HideAsync();
@@ -1322,6 +1478,19 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
         });
         // The hardware/software Back key is Escape (pause, and back in the menus) instead of
         // leaving the game; on the files screen it closes the app, as usual
+#ifdef REVC_WP81
+        bool hooked = revc::wp81::OnBackPressed([this] {
+            if (!gameReady_) return false;
+            if (AboutUp()) {
+                CloseAbout();
+                return true;
+            }
+            Push(HOST_EV_KEY_DOWN, VK_ESCAPE);
+            Push(HOST_EV_KEY_UP, VK_ESCAPE);
+            return true;
+        });
+        Log(hooked ? "shell: the Back key is the game's Escape" : "shell: the Back key could not be had");
+#else
         try {
             SystemNavigationManager::GetForCurrentView().BackRequested(
                 [this](auto const&, BackRequestedEventArgs const& a) {
@@ -1336,7 +1505,75 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
                 });
         } catch (...) {
         }
+#endif
     }
+
+#ifdef REVC_WP81
+    // ===[ The log, for a tester to send: 8.1 has no Device Portal ]===
+    // The phone's share screen (mail, messaging, OneDrive...), with this run's log and the last
+    // one's as files and the end of both as text, from the files screen and from the About.
+
+    bool shareHooked_ = false;
+
+    void ShareLog() {
+        using namespace winrt::Windows::ApplicationModel::DataTransfer;
+        try {
+            if (!shareHooked_) {
+                shareHooked_ = true;
+                DataTransferManager::GetForCurrentView().DataRequested(
+                    [this](auto const&, DataRequestedEventArgs const& a) { FillShare(a.Request()); });
+            }
+            LogWrite("shell: the log is shared");
+            LogFlush();
+            DataTransferManager::ShowShareUI();
+        } catch (winrt::hresult_error const& e) {
+            Log("shell: the share screen could not be shown, " + std::to_string(e.code().value));
+        }
+    }
+
+    // The last bytes of a log of the app's, as text
+    std::string LogTail(const wchar_t* name, size_t most) {
+        HANDLE h = ::CreateFile2((local_ + L"\\" + name).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 OPEN_EXISTING, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return {};
+        LARGE_INTEGER size{};
+        ::GetFileSizeEx(h, &size);
+        LARGE_INTEGER from{};
+        from.QuadPart = size.QuadPart > static_cast<LONGLONG>(most) ? size.QuadPart - static_cast<LONGLONG>(most) : 0;
+        ::SetFilePointerEx(h, from, nullptr, FILE_BEGIN);
+        std::string text(static_cast<size_t>(size.QuadPart - from.QuadPart), '\0');
+        DWORD n = 0;
+        ::ReadFile(h, text.data(), static_cast<DWORD>(text.size()), &n, nullptr);
+        ::CloseHandle(h);
+        text.resize(n);
+        return text;
+    }
+
+    winrt::fire_and_forget FillShare(winrt::Windows::ApplicationModel::DataTransfer::DataRequest request) {
+        auto lifetime = get_strong();
+        auto deferral = request.GetDeferral();
+        try {
+            auto data = request.Data();
+            data.Properties().Title(winrt::hstring(L"reVC " + version_ + L" log"));
+            std::vector<winrt::Windows::Storage::IStorageItem> files;
+            auto folder = winrt::Windows::Storage::ApplicationData::Current().LocalFolder();
+            for (const wchar_t* name : {L"revc.log", L"revc.prev.log"}) {
+                try {
+                    files.push_back(co_await folder.GetFileAsync(name));
+                } catch (winrt::hresult_error const&) {
+                }
+            }
+            if (!files.empty()) data.SetStorageItems(winrt::single_threaded_vector(std::move(files)));
+            std::string text = "reVC " + Utf8(version_) + " for " REVC_PLATFORM "\r\n\r\n=== revc.log (this run) ===\r\n" +
+                               LogTail(L"revc.log", 24000) + "\r\n\r\n=== revc.prev.log (the run before) ===\r\n" +
+                               LogTail(L"revc.prev.log", 24000);
+            data.SetText(winrt::hstring(Wide(text.c_str())));
+        } catch (winrt::hresult_error const& e) {
+            Log("shell: the log could not be put on the share screen, " + std::to_string(e.code().value));
+        }
+        deferral.Complete();
+    }
+#endif
 
     winrt::Windows::UI::Xaml::Markup::IXamlType GetXamlType(winrt::Windows::UI::Xaml::Interop::TypeName const&) {
         return nullptr;

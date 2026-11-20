@@ -1,0 +1,50 @@
+reVC (GTA Vice City) for Windows Phone 8.1 - what to test
+
+WHAT IT IS
+The game itself, built for Windows Phone 8.1 for the first time. It needs your own copy of
+Grand Theft Auto: Vice City for PC (about 1.5 GB). Nothing of the game's data is in the package.
+File: @PACKAGE@ (installs as an app of its own, "reVC")
+
+WHAT YOU NEED
+- A phone with Windows Phone 8.1 (NOT Windows 10 Mobile), developer-unlocked or interop-unlocked,
+  as for the trial app.
+- 1 GB of RAM or more. On a 512 MB phone the app warns that the phone will most likely close
+  the game: please try it anyway if that is all you have, and say so.
+- About 3.5 GB free: 1.5 GB for the game folder you copy to the phone, and 1.5 GB inside the
+  app. The folder you copied can be deleted once the app has its copy.
+- The PC game's folder: the one with the folders audio, data, models, anim, txd and TEXT.
+
+STEPS
+1. Install the .appx the same way you installed the trial.
+2. Connect the phone by USB and copy the whole game folder to it (to Documents or to the SD card).
+3. Open reVC. Tap "Choose the game's folder...". The phone's folder picker opens: choose the
+   game folder and confirm. The app comes back and copies the game: several minutes. Keep the
+   app open and the screen on.
+4. When the copy is done, the game starts. Wait for its menu, then start a new game. Walk, get
+   into a car, drive for a few minutes.
+5. Please also try:
+   - the Back button: in the game it should pause / go back in the game's menus, not leave it;
+   - turning the phone to the other landscape side;
+   - the on-screen controls (left half of the screen: move; right half: camera);
+   - leaving with the Start button and coming back: the game should be paused, not restarted;
+   - the RES button in the game's menus (picture size; it takes effect at the next start).
+
+WHAT TO SEND BACK
+1. The phone: model, RAM, OS version (Settings > About > More info).
+2. What worked and what did not: the install; coming back from the folder picker; the copy (how
+   long it took); the game's menu; a new game; sound (voices in the first cutscene, the radio in
+   a car); the controls; the Back button.
+3. How smooth it is walking and driving, and whether the phone gets hot.
+4. The log. Two places have a "Send the log" button:
+   - the app's first screen (the one with "Choose the game's folder...");
+   - in the game: Options > About the Port.
+   It opens the phone's share screen: send it by e-mail, a message or OneDrive. If the game
+   closes by itself, open the app again and send the log from its first screen right away: it
+   carries the run that closed as well.
+5. Screenshots (Power + Volume Up) or photos of anything that looks wrong.
+
+IF IT DOES NOT WORK
+- The install is refused: send the exact error text.
+- The app closes at once: open it again and send the log; if it never gets as far as its first
+  screen, say after how many seconds it closes.
+- The folder picker comes back and nothing happens: send the log.
