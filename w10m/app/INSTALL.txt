@@ -68,20 +68,18 @@ A keyboard works with the game's PC keys.
 RESOLUTION
 ----------
 The button at the top right of the menus (RES) sets what the game is drawn at: at most 720
-lines (the default; 432 on the slower phones below), or 100, 75, 60 or 50 per cent of the
+lines (the default; 626 on the slower phones below), or 100, 87, 75, 60 or 50 per cent of the
 screen. It takes effect the next time the app starts. Fewer pixels are faster.
 
 SLOWER PHONES
 -------------
-On phones whose graphics chip stops at Direct3D level 9 (the Lumia 550, 650 and the like), the
-first start keeps the screen black for a little over a minute while the game's shaders are
-prepared; they are kept, and later starts take a quarter of a minute. The game itself runs at
-about 26 frames a second standing in a street on a Lumia 650 and 17 to 22 driving: the menus
-are fine, the city is slower than on a faster phone. To spare such a phone the game is drawn at 432 lines there unless
-RES says otherwise (at 720 lines it is slower), draws distant vehicles in low
-detail, uses its plain colour filter and its shortest draw distance (the last two can be
-changed in Options > Display). On an HP Elite x3 it runs at the game's full 30 frames a
-second.
+Phones whose graphics chip stops at Direct3D level 9 (the Lumia 550, 650 and the like) are
+slower: on a Lumia 650 the game runs at 24 to 29 frames a second driving through the city (25
+to 30 at 960x540, 17 to 25 at 1280x720 in traffic). To spare such a phone it is drawn at 626 lines there
+unless RES says otherwise, draws vehicles in full detail only near the camera, and on its first
+start takes the game's plain colour filter and shortest draw distance and turns off the
+PlayStation 2's alpha test; those three can be changed in Options > Display and stay as set. On
+an HP Elite x3 the game runs at its full 30 frames a second at 720 lines.
 
 IF SOMETHING GOES WRONG
 -----------------------
@@ -160,20 +158,19 @@ Grand Theft Auto: Vice City на телефонах с Windows 10 Mobile (ARM). 
 РАЗРЕШЕНИЕ
 ----------
 Кнопка справа вверху в меню (RES) задаёт, в каком разрешении рисуется игра: не более 720 строк
-(по умолчанию; 432 на телефонах послабее, о них ниже) либо 100, 75, 60 или 50 процентов экрана.
-Действует со следующего запуска приложения. Меньше пикселей — быстрее.
+(по умолчанию; 626 на телефонах послабее, о них ниже) либо 100, 87, 75, 60 или 50 процентов
+экрана. Действует со следующего запуска приложения. Меньше пикселей — быстрее.
 
 ТЕЛЕФОНЫ ПОСЛАБЕЕ
 -----------------
-На телефонах, чей графический чип не идёт дальше Direct3D уровня 9 (Lumia 550, 650 и подобные),
-при первом запуске экран чуть больше минуты остаётся чёрным, пока готовятся шейдеры игры; они
-сохраняются, и следующие запуски занимают четверть минуты. Сама игра на Lumia 650 идёт со
-скоростью около 26 кадров в секунду, если стоять на улице, и 17–22 в поездке: меню
-работает нормально, город — медленнее, чем на телефоне побыстрее. Чтобы поберечь такой телефон, игра на нём рисуется в 432
-строки, если кнопкой RES не выбрано иное (в 720 строк она медленнее), рисует
-дальние машины упрощённо, включает простой цветовой фильтр и наименьшую дальность прорисовки
-(последние два можно изменить в настройках экрана игры). На HP Elite x3 игра идёт на полных 30
-кадрах в секунду.
+Телефоны, чей графический чип не идёт дальше Direct3D уровня 9 (Lumia 550, 650 и подобные),
+медленнее: на Lumia 650 игра идёт со скоростью 24–29 кадров в секунду в поездке по городу
+(25–30 в разрешении 960x540, 17–25 в 1280x720 в плотном движении). Чтобы поберечь такой телефон, игра
+рисуется на нём в 626 строк, если кнопкой RES не выбрано иное, рисует машины в полной детализации
+только вблизи, а при первом запуске включает простой цветовой фильтр и наименьшую дальность
+прорисовки и выключает альфа-тест PlayStation 2; эти три настройки можно изменить в настройках
+экрана игры, и они останутся такими, как выбраны. На HP Elite x3 игра идёт на полных 30 кадрах
+в секунду в 720 строк.
 
 ЕСЛИ ЧТО-ТО НЕ ТАК
 ------------------
