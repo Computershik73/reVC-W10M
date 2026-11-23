@@ -2324,6 +2324,18 @@ CCamera::StartTransition(int16 newMode)
 		break;
 
 	case CCam::MODE_FOLLOWPED:
+#ifdef GTA_TOUCH_CONTROLS
+		// A pad's lock-on (R1) is there with the mouse's camera on a phone (PlayerPed.cpp,
+		// ProcessPlayerWeapon). Coming back from its camera, the mouse's would start as Init()
+		// below leaves it, at Beta 0: looking west, with the player turned that way too, wherever
+		// the target was. It goes on looking where the lock-on camera looked.
+		if(m_bUseMouse3rdPerson &&
+		   (Cams[ActiveCam].Mode == CCam::MODE_SYPHON || Cams[ActiveCam].Mode == CCam::MODE_SYPHON_CRIM_IN_FRONT) &&
+		   (Cams[ActiveCam].Front.x != 0.0f || Cams[ActiveCam].Front.y != 0.0f)){
+			m_bUseTransitionBeta = true;
+			Cams[ActiveCam].m_fTransitionBeta = CGeneral::GetATanOfXY(Cams[ActiveCam].Front.x, Cams[ActiveCam].Front.y) + PI;
+		}
+#endif
 		// Getting out of vehicle normally
 		betaOffset = DEGTORAD(55.0f);
 		if(m_bJustCameOutOfGarage){

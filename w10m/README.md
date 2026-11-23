@@ -664,7 +664,15 @@ and how fast the right stick turns the camera on foot (`CPad::LookAroundLeftRigh
 dead zone round the middle in the skeleton): the game's own curve turned the camera at 113
 degrees a second for a tenth of the screen stick's push, at 265 by a little over half, at 34
 just past that and at 304 at the edge; now it is the square of the push past the dead zone,
-5 degrees a second at a fifth, 64 at a half, 306 at the edge.
+5 degrees a second at a fifth, 64 at a half, 306 at the edge (the display menu's free camera of
+the classic controls takes the same curve: the game's began only two thirds of the way); the
+camera coming back from a pad's lock-on (R1, which the Android fork lets work with the mouse
+camera of the standard controls) looks on where it looked, not west as the camera's start left it
+and the player with it. And reVC.ini keeps every binding
+an action has: the game wrote the first four of an action's places alone, and where an action
+has both keyboards, the mouse and the pad, the pad's came after them and was gone from the
+second start on (fire on foot, so the circle hit nothing, drive-by, the handbrake, looking
+behind, the radio, the sniper's zoom); an ini written that way gets the pad's defaults back once.
 
 ## Build
 
@@ -833,6 +841,7 @@ takes it away again, which is not to be forgotten: they stay until removed.
 | `REVC_VERBOSE=1` | everything the game prints goes into the log |
 | `REVC_FRAMESHOT=5` | the game's picture, every five seconds, as `LocalState\frame.bmp` (640 wide at most): `phone.py file frame.bmp`, which makes a PNG of it too. `REVC_FRAMESHOT=1k` keeps every one, a second apart, as `frame_001.bmp` and so on (320 wide), each logged with the time on the clock of `REVC_KEYS`; `phone.py frames` fetches them, takes them off the phone and puts them on one sheet, `frames.png` (with PIL), which is how a scripted drive is seen and corrected. A series begins with none of the one before it and ends by itself at 900 frames (the setting left on a phone that was then played on for hours filled a gigabyte) |
 | `REVC_KEYS=13@3,13@6,s@8` | keys pressed by the clock, which starts when the game's menu first comes up: virtual key 13 (Enter) after 3 seconds and again after 6 (a new game), and from 8 on every cutscene is skipped as it starts. `87@45-75` holds a key from 45 to 75: W, the accelerator of the game's PC keys (65 and 68, A and D, steer; 83, S, brakes). `d@12`: from then on the player's car is driven as the traffic's cars are, along the roads and round what is on them, and a player without a car is put behind the wheel of the nearest: **a run that drives itself**, `REVC_KEYS=13@3,13@6,s@8,d@12` (keys held by the clock end in a wall as soon as the game is a little quicker or slower than where they were timed). With the frames, a way into the game from the PC |
+| `REVC_AIM_TEST=classic` (`standard`, `classic-free`) | with `REVC_KEYS=13@3,13@6,s@8`: once the player of the new game has been on foot for three seconds, the controls menu's method (and the display menu's free camera for `-free`) for this run alone, a pistol and two men standing 7 m ahead; then the pad works by the clock: the right stick at 0.6 and at full, R1 held with the circle, R2 and the circle again, the circle alone; `aim:` lines in the log every quarter of a second (the camera's mode and heading, the player's, his target, the men's health) |
 | `REVC_PERF=1` | every ten seconds, the draws of a frame and the time in them (`perf: 290 draws a frame: vertex input 1.1 ms, state and uniforms 2.6 ms, the draw calls 41.1 ms; 55 immediate draws, 13.3 ms`; with a drawing thread that is the time to queue them, and its own is in the line `the drawing thread worked 44.2 ms a frame on 1437 calls`), what changed between them (`12 programs, 342 uniforms, 305 textures (208 different ones), ... 73 vertex arrays, 40 blend`), and without a drawing thread what a draw call took by what was changed before it |
 | `REVC_GL_THREAD=0` (`1`) | OpenGL ES is called on the game's own thread, as on a phone with OpenGL ES 3.0; `1` gives such a phone the drawing thread. With `REVC_PERF=1` the log then has the draw calls by pipeline and by what was changed before them; with the drawing thread, that thread's time by kind of call |
 | `REVC_GL_PRIORITY=0` | the drawing thread at the priority of any other thread, not above |

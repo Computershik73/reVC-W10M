@@ -464,13 +464,64 @@ void LoadINIControllerSettings()
 			}
 		}
 	}
+#ifdef GTA_W10M
+	// reVC.ini as SaveINIControllerSettings wrote it before (below) has no pad button for fire,
+	// and PadButtonsInited keeps the pad's defaults from being given again: they are given
+	// again here, all of them, and kept from the next save on.
+	if (ControlsManager.ms_padButtonsInited != 0 &&
+	    ControlsManager.GetControllerKeyAssociatedWithAction(PED_FIREWEAPON, JOYSTICK) == 0) {
+		uint32 buttons = ControlsManager.ms_padButtonsInited;
+		ControlsManager.ms_padButtonsInited = 0;
+		ControlsManager.InitDefaultControlConfigJoyPad(buttons);
+		debug("w10m: reVC.ini had no pad button for fire: the pad's default bindings are back\n");
+	}
+#endif
 }
+
+#ifdef GTA_W10M
+// One binding of an action as reVC.ini has it, and a comma
+static void
+AppendIniBinding(char *value, int32 action, int32 type)
+{
+	char next[32];
+	int32 key = ControlsManager.m_aSettings[action][type].m_Key;
+	if (type == JOYSTICK)
+		snprintf(next, 32, "%s%d,", iniControllerTypes[type], key);
+	else if (type == KEYBOARD || type == OPTIONAL_EXTRA) {
+		if (key == ' ')
+			snprintf(next, 32, "%sSPC,", iniControllerTypes[type]);
+		else if (key < 256)
+			snprintf(next, 32, "%s%c,", iniControllerTypes[type], key);
+		else
+			snprintf(next, 32, "%s%s,", iniControllerTypes[type], iniKeyboardButtons[key - 1000]);
+	} else if (type == MOUSE)
+		snprintf(next, 32, "%s%s,", iniControllerTypes[type], iniMouseButtons[key - 1]);
+	else
+		return;
+	strcat(value, next);
+}
+#endif
 
 void SaveINIControllerSettings()
 {
 	for (int32 i = 0; i < MAX_CONTROLLERACTIONS; i++) {
 		char value[128] = { '\0' };
 
+#ifdef GTA_W10M
+		// Every binding the action has, in its order. An action has up to four (the two
+		// keyboards, the mouse, a pad), but the orders can have gaps and go past four, and the
+		// loop below writes orders 1 to 4 alone: for every action with all four the pad's came
+		// past them and was left out. So from the second start on the pad had no fire (the
+		// circle button hit nothing, on the phones and on a PC), drive-by, handbrake, looking
+		// behind, radio or sniper's zoom (2026-11-21).
+		bool written[MAX_CONTROLLERTYPES] = {};
+		for (int32 j = SETORDER_1; j < SETORDER_1 + 4 * MAX_CONTROLLERTYPES; j++)
+			for (int32 k = 0; k < MAX_CONTROLLERTYPES; k++)
+				if (!written[k] && ControlsManager.m_aSettings[i][k].m_ContSetOrder == j) {
+					written[k] = true;
+					AppendIniBinding(value, i, k);
+				}
+#else
 		// upper limit should've been GetNumOfSettingsForAction(i), but sadly even R* doesn't use it's own system correctly, and there are gaps between orders.
 		for (int32 j = SETORDER_1; j < MAX_SETORDERS; j++){
 
@@ -497,6 +548,7 @@ void SaveINIControllerSettings()
 				}
 			}
 		}
+#endif
 		int len = strlen(value);
 		if (len > 0)
 			value[len - 1] = '\0'; // to remove comma
