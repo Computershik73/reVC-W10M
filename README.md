@@ -4,7 +4,8 @@
 
 The `w10m` branch adds a port to Windows 10 Mobile (32-bit ARM, UWP), on top of the Android fork
 described below: [`w10m/README.md`](w10m/README.md) has what it is made of, how it is built and
-what has and has not been tested. The rest of this file is the Android fork's.
+what has and has not been tested. The `wp81` branch adds Windows Phone 8.1 to it, in a build of
+its own: `w10m/wp81/README.md` in that branch. The rest of this file is the Android fork's.
 
 ## Intro
 

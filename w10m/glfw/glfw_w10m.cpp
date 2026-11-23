@@ -52,6 +52,8 @@ extern "C" __declspec(dllimport) void angle_uwp_set_panel_size(int32_t width, in
 extern "C" int32_t reVC_W10M_Frame(void);
 extern "C" void reVC_W10M_SkipCutscenes(void);
 extern "C" void reVC_W10M_DriveItself(void);
+// a test run's presses of the pad (REVC_AIM_TEST), after the shell's
+extern "C" void reVC_W10M_TestPad(float* axes, unsigned char* buttons);
 
 struct GLFWmonitor {
     GLFWvidmode mode;
@@ -907,6 +909,7 @@ void glfwPollEvents(void) {
     SyncPanelSize(window, true);
     host_pad_state(&gPad);
     StepScript(window, reVC_W10M_Frame());
+    reVC_W10M_TestPad(gPad.axes, gPad.buttons);
 }
 
 void glfwSetInputMode(GLFWwindow*, int, int) {}  // there is no cursor to hide or capture

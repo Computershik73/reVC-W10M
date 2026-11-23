@@ -12,14 +12,21 @@
 #include "crossplatform.h"
 
 #include "AutoPilot.h"
+#include "Camera.h"
 #include "CarCtrl.h"
+#include "CivilianPed.h"
 #include "CutsceneMgr.h"
 #include "Frontend.h"
 #include "General.h"
+#include "Pad.h"
 #include "PlayerInfo.h"
 #include "PlayerPed.h"
 #include "Pools.h"
+#include "Population.h"
+#include "Streaming.h"
 #include "Vehicle.h"
+#include "WeaponInfo.h"
+#include "World.h"
 #include "Renderer.h"
 #include "RwHelper.h"
 #include "Timer.h"
@@ -437,6 +444,160 @@ DriveItself(void)
 	}
 }
 
+// A run that tries the aim (REVC_AIM_TEST=standard, classic or classic-free): the control
+// method of the game's controls menu as named, with the display menu's free camera for
+// "-free" ("-still": the right stick is left alone), for this run alone (put back at the end; nothing saves it meanwhile). Once the
+// player has had his controls on foot for three seconds he gets a pistol, and two men stand
+// still 7 m ahead of him, 2.5 m to his left and to his right. Then the pad is worked by the
+// clock (reVC_W10M_TestPad): the right stick right at 0.6 (3-5 s) and at full (5-7 s), R1
+// held (8-12.5 s) with the circle at 9 s, R2 at 10 s and the circle at 11 s, the circle alone
+// at 14 s. Every quarter of a second the camera, the player and his target go into the log
+// ("aim:" lines); the test ends at 16 s.
+static int32 gAimTest = -1;	// -1 REVC_AIM_TEST not read; 0 off; 1 waiting for the player; 2 running; 3 done
+static bool gAimClassic, gAimFree, gAimStill;
+static int8 gAimWasMethod;
+static bool gAimWasMouse, gAimWasFree;
+static uint32 gAimOnFoot, gAimStart, gAimLogged;
+static int32 gAimPeds[2] = { -1, -1 };
+
+static CPed *
+AimTestPed(int32 i)
+{
+	return gAimPeds[i] < 0 ? nil : CPools::GetPedPool()->GetAt(gAimPeds[i]);
+}
+
+static float
+AimTestSeconds(void)
+{
+	return (CTimer::GetTimeInMilliseconds() - gAimStart) / 1000.0f;
+}
+
+static void
+AimTestStandingMan(CPlayerPed *player, int32 i, float side)
+{
+	CVector pos = player->GetPosition() + player->GetForward() * 7.0f + player->GetRight() * side;
+	CPed *ped = new CCivilianPed(PEDTYPE_CIVMALE, MI_MALE01);
+	ped->CharCreatedBy = MISSION_CHAR;
+	ped->bRespondsToThreats = false;
+	ped->bAllowMedicsToReviveMe = false;
+	ped->SetPosition(pos);
+	float facing = CGeneral::LimitRadianAngle(player->GetForward().Heading() + PI);
+	ped->SetHeading(facing);
+	ped->m_fRotationCur = ped->m_fRotationDest = facing;
+	CWorld::Add(ped);
+	CPopulation::ms_nTotalMissionPeds++;
+	gAimPeds[i] = CPools::GetPedPool()->GetIndex(ped);
+}
+
+static const char *
+AimTestTargetName(CEntity *target)
+{
+	if (target == nil)
+		return "none";
+	if (target == AimTestPed(0))
+		return "left";
+	if (target == AimTestPed(1))
+		return "right";
+	return "other";
+}
+
+static void
+AimTestLog(CPlayerPed *player, const char *what)
+{
+	CCam &cam = TheCamera.Cams[TheCamera.ActiveCam];
+	const char *process = cam.Mode != CCam::MODE_FOLLOWPED ? "other" :
+	                      CCamera::m_bUseMouse3rdPerson ? "mouse" : CCamera::bFreeCam ? "rotation" : "classic";
+	float camHeading = RADTODEG(CVector2D(cam.Front.x, cam.Front.y).Heading());
+	CPed *left = AimTestPed(0), *right = AimTestPed(1);
+	host_logf("aim: %5.2f s %s camera mode %d (%s) heading %4.0f, player heading %4.0f state %d weapon %d ammo %d, target %s, men's health %.0f %.0f",
+	          AimTestSeconds(), what, cam.Mode, process, camHeading, RADTODEG(player->m_fRotationCur), player->m_nPedState,
+	          player->GetWeapon()->m_eWeaponType, player->GetWeapon()->m_nAmmoTotal, AimTestTargetName(player->m_pPointGunAt),
+	          left ? left->m_fHealth : -1.0f, right ? right->m_fHealth : -1.0f);
+}
+
+static void
+AimTest(void)
+{
+	if (gAimTest < 0) {
+		const char *mode = getenv("REVC_AIM_TEST");
+		gAimTest = mode ? 1 : 0;
+		if (mode) {
+			gAimClassic = strncmp(mode, "classic", 7) == 0;
+			gAimFree = strstr(mode, "free") != nil;
+			gAimStill = strstr(mode, "still") != nil;
+		}
+	}
+	if (gAimTest != 1 && gAimTest != 2)
+		return;
+	CPlayerPed *player = FindPlayerPed();
+	if (player == nil || gGameState != GS_PLAYING_GAME || CCutsceneMgr::IsRunning() ||
+	    FrontEndMenuManager.GetIsMenuActive() || player->InVehicle() || CPad::GetPad(0)->ArePlayerControlsDisabled()) {
+		gAimOnFoot = 0;
+		return;
+	}
+	uint32 now = CTimer::GetTimeInMilliseconds();
+	if (gAimTest == 1) {
+		if (gAimOnFoot == 0)
+			gAimOnFoot = now;
+		if (now - gAimOnFoot < 3000)
+			return;
+		gAimWasMethod = FrontEndMenuManager.m_ControlMethod;
+		gAimWasMouse = CCamera::m_bUseMouse3rdPerson;
+		gAimWasFree = CCamera::bFreeCam;
+		FrontEndMenuManager.m_ControlMethod = gAimClassic ? CONTROL_CLASSIC : CONTROL_STANDARD;
+		CCamera::m_bUseMouse3rdPerson = !gAimClassic;
+		CCamera::bFreeCam = gAimFree;
+
+		CStreaming::RequestModel(MI_MALE01, STREAMFLAGS_DONT_REMOVE);
+		CStreaming::RequestModel(MI_COLT45, STREAMFLAGS_DONT_REMOVE);
+		CStreaming::LoadAllRequestedModels(false);
+		player->GiveWeapon(WEAPONTYPE_COLT45, 200);
+		player->m_nSelectedWepSlot = CWeaponInfo::GetWeaponInfo(WEAPONTYPE_COLT45)->m_nWeaponSlot;
+		player->SetCurrentWeapon(WEAPONTYPE_COLT45);
+		AimTestStandingMan(player, 0, -2.5f);
+		AimTestStandingMan(player, 1, 2.5f);
+		gAimStart = gAimLogged = now;
+		gAimTest = 2;
+		host_logf("aim: the test begins: control method %s, free camera %s (were %d, %d)",
+		          gAimClassic ? "classic" : "standard", gAimFree ? "on" : "off", gAimWasMethod, gAimWasFree);
+		AimTestLog(player, "start");
+		return;
+	}
+	if (now - gAimLogged >= 250) {
+		gAimLogged = now;
+		AimTestLog(player, "     ");
+	}
+	if (AimTestSeconds() >= 16.0f) {
+		FrontEndMenuManager.m_ControlMethod = gAimWasMethod;
+		CCamera::m_bUseMouse3rdPerson = gAimWasMouse;
+		CCamera::bFreeCam = gAimWasFree;
+		gAimTest = 3;
+		host_log("aim: the test is over, the control method and the free camera are as they were");
+	}
+}
+
+// The GLFW layer's pad (w10m/glfw), after the shell's state is in it: what REVC_AIM_TEST has
+// the pad do at this point of its clock. Buttons and axes in GLFW's gamepad order.
+extern "C" void
+reVC_W10M_TestPad(float *axes, unsigned char *buttons)
+{
+	if (gAimTest != 2)
+		return;
+	float t = AimTestSeconds();
+	if (gAimStill)
+		;
+	else if (t >= 3.0f && t < 5.0f)
+		axes[2] = 0.6f;	// the right stick, to the right
+	else if (t >= 5.0f && t < 7.0f)
+		axes[2] = 1.0f;
+	if (t >= 8.0f && t < 12.5f)
+		buttons[5] = 1;	// R1
+	if ((t >= 9.0f && t < 9.15f) || (t >= 11.0f && t < 11.15f) || (t >= 14.0f && t < 14.15f))
+		buttons[1] = 1;	// the circle
+	if (t >= 10.0f && t < 10.15f)
+		axes[5] = 1.0f;	// R2
+}
+
 extern "C" int32
 reVC_W10M_Frame(void)
 {
@@ -446,6 +607,7 @@ reVC_W10M_Frame(void)
 		requests |= HOST_REQUEST_SKIP_CUTSCENE;
 	if (gDriveItself)
 		DriveItself();
+	AimTest();
 
 	// The skip button ends the cutscene itself instead of pressing Cross for a frame:
 	// CCutsceneMgr::Update() looks at the pad only in some camera modes and load states, and a

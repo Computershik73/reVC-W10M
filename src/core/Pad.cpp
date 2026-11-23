@@ -3358,12 +3358,23 @@ int16 CPad::SniperModeLookUpDown(void)
 
 #ifdef GTA_W10M
 // How fast the right stick turns the camera on foot (the mouse camera, the one of the standard
-// controls): nothing within the dead zone round the middle (glfw.cpp, 0.3 of the way), then the
+// controls, and the display menu's free camera with the classic ones): nothing within the dead zone round the middle (glfw.cpp, 0.3 of the way), then the
 // square of how far past it the stick is, along the stick's direction, up to the 171 that the
 // game's own curve below reaches at the edge. That curve gave a third of the full speed for the
 // least push past the dead zone, rose to 149 by two thirds of the way, fell to 4 just past that
 // and climbed to 171 again: a thumb on the screen's stick could not turn the camera slowly, nor
 // speed it up evenly. Upward and downward it began only at 40 of the 128.
+// Where that is: the mouse camera, or the free one on foot (CCam::Process_FollowPed_Rotation),
+// which had the game's curve and so nothing up to two thirds of the way and then almost all of
+// the speed at once (2026-11-21, measured by REVC_AIM_TEST). Not the classic camera without it:
+// there the stick past two thirds looks around in the first person, as on the PlayStation 2.
+static bool
+StickTurnsCamera(void)
+{
+	return TheCamera.Cams[0].Using3rdPersonMouseCam() ||
+	       (CCamera::bFreeCam && TheCamera.Cams[0].Mode == CCam::MODE_FOLLOWPED);
+}
+
 static int16
 LookAroundSpeed(float axis, float other)
 {
@@ -3379,7 +3390,7 @@ LookAroundSpeed(float axis, float other)
 int16 CPad::LookAroundLeftRight(void)
 {
 #ifdef GTA_W10M
-	if (TheCamera.Cams[0].Using3rdPersonMouseCam())
+	if (StickTurnsCamera())
 		return LookAroundSpeed(GetPad(0)->NewState.RightStickX, GetPad(0)->NewState.RightStickY);
 #endif
 	float axis = GetPad(0)->NewState.RightStickX;
@@ -3404,7 +3415,7 @@ int16 CPad::LookAroundUpDown(void)
 	if (CPad::bInvertLook4Pad)
 		axis = -axis;
 #ifdef GTA_W10M
-	if (TheCamera.Cams[0].Using3rdPersonMouseCam())
+	if (StickTurnsCamera())
 		return LookAroundSpeed(axis, GetPad(0)->NewState.RightStickX);
 #endif
 
