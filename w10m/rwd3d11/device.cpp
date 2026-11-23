@@ -1760,6 +1760,18 @@ startDirect3D(void)
 	// REVC_D3D_KEEP=1: the GPU is not told what it need not keep (the picture before a frame,
 	// the depth buffer after it), to see what that is worth
 	d3d.discards = getenv("REVC_D3D_KEEP") == nil;
+	// Not the depth buffer on Windows Phone 8.1: told away after each frame (DiscardView), on a
+	// Lumia 920 (Adreno 225, 8.10.12393) the radar was empty and the picture behind a fast car
+	// smeared in every other frame; kept, both were gone (REVC_D3D_KEEP=1, 2026-11-21). The
+	// picture before a frame is still told away: keeping that too cost a third of the frames.
+	// REVC_D3D_DISCARD_DEPTH=1 or 0 says otherwise.
+#ifdef REVC_WP81
+	d3d.depthDiscards = 0;
+#else
+	d3d.depthDiscards = d3d.discards;
+#endif
+	if(const char *value = getenv("REVC_D3D_DISCARD_DEPTH"))
+		d3d.depthDiscards = d3d.discards && atoi(value) != 0;
 	d3d.immediate1 = nil;
 	if(FAILED(d3d.context->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&d3d.immediate1)))
 		d3d.immediate1 = nil;
@@ -1958,6 +1970,32 @@ initDirect3D(void)
 	// same frames a second with it and without). REVC_D3D_INSTANCE=0 or 1 says otherwise.
 	// Before the first shader is made: a shader knows then whether it has that form.
 	instancing = d3d.level < D3D_FEATURE_LEVEL_10_0;
+#ifdef REVC_WP81
+	{
+		// Windows Phone 8.1's GPUs differ there. Of the bench's draws with a matrix of their
+		// own (w10m/wp81/trial.cpp), with the GPU's part: an Adreno 330 (HTC One M8) 8.6
+		// microseconds with the vertices and 28.2 by a constant buffer, as an Adreno 304 on
+		// Windows 10 Mobile (32 and 87); an Adreno 225 (Lumia 920) 92.6 with the vertices and
+		// 29.8 by a constant buffer. In the game, driving itself, the Lumia 920 had 21.8 frames
+		// a second at 300 draws a frame with the vertices and 28.7 by constants (2026-11-21).
+		// So with the vertices only on an Adreno of the 300s or later; the 920's driver calls
+		// its GPU "Software Adapter".
+		char name[128] = "?";
+		IDXGIDevice *dxgiDevice = nil;
+		IDXGIAdapter *adapter = nil;
+		DXGI_ADAPTER_DESC desc;
+		if(SUCCEEDED(d3d.device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice)) &&
+		   SUCCEEDED(dxgiDevice->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&desc)))
+			WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nil, nil);
+		release(adapter);
+		release(dxgiDevice);
+		const char *adreno = strstr(name, "Adreno ");
+		bool32 laterAdreno = adreno && adreno[7] >= '3' && adreno[7] <= '9';
+		logf("d3d: the GPU is \"%s\"", name);
+		if(instancing && !laterAdreno)
+			instancing = 0;
+	}
+#endif
 	if(const char *value = getenv("REVC_D3D_INSTANCE"))
 		instancing = atoi(value) != 0;
 	if(instancing && !openInstances())
@@ -2210,7 +2248,7 @@ rwd3d11_show(int interval)
 	pictureBegun = 0;
 	// The picture's depth buffer is of no use once the frame is drawn (the next one clears
 	// it), and a GPU that draws in tiles need not write it out of them: Direct3D 11.1 can say so
-	ID3D11DepthStencilView *depth = d3d.discards && d3d.immediate1 ? pictureDepth : nil;
+	ID3D11DepthStencilView *depth = d3d.depthDiscards && d3d.immediate1 ? pictureDepth : nil;
 	if(d3d.threaded){
 		// to the drawing thread, which shows it when it has made it; held here while that
 		// thread is not done with the frame before

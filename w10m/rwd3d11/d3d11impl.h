@@ -28,6 +28,7 @@ struct D3d
 	// told what it need not keep (REVC_D3D_KEEP=1: it is not)
 	ID3D11DeviceContext1 *immediate1;
 	bool32 discards;
+	bool32 depthDiscards;	// the depth buffer told away after a frame as well (device.cpp)
 	D3D_FEATURE_LEVEL level;
 	// What is shown: the swap chain in the shell's panel, or, where there is no panel (the
 	// tests on a PC), a texture nobody sees

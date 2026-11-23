@@ -69,10 +69,22 @@ bench asks for it ([`d3dcompile.cpp`](d3dcompile.cpp)).
   again after a crash) as files, and their ends as text.
 - **Memory**: a phone with 512 MB gives an app about 185 MB, and the game needs about 220 MB.
   The files screen says so on such a phone; 1 GB or more is what the game is for.
+- **The renderer** (`rwd3d11/device.cpp`, `REVC_WP81`), from a Lumia 920:
+  - the depth buffer is not told away after each frame (`DiscardView`). With it, an Adreno 225
+    on 8.10.12393 drew the radar empty and smeared the picture behind a fast car in every other
+    frame (the radar's round mask is drawn into the depth buffer). The picture before a frame
+    is still told away: keeping it as well (`REVC_D3D_KEEP=1`) cost a third of the frames.
+    `REVC_D3D_DISCARD_DEPTH=1` discards the depth buffer again;
+  - what differs between the draws of geometry goes with the vertices (the instance stream)
+    only on an Adreno of the 300s or later; on any other GPU by constant buffers. The trial's
+    bench, a draw with a matrix of its own with the GPU's part: Adreno 330 (HTC One M8) 8.6
+    microseconds with the vertices and 28.2 by a constant buffer, Adreno 225 (Lumia 920, whose
+    driver calls it "Software Adapter") 92.6 and 29.8. `REVC_D3D_INSTANCE=1` or `0` says
+    otherwise. The log says what the GPU is called (`d3d: the GPU is ...`).
 
 ## What has been checked, and what not
 
-- **The link** (1.0.1120.1422, ARM and x86, from this folder's own CMakeLists.txt): the whole
+- **The link** (1.0.1121.1616, ARM and x86, from this folder's own CMakeLists.txt): the whole
   game, OpenAL Soft and mpg123 against the 8.1 kit alone, with the stubs. The ARM program is
   marked for subsystem 6.02 and an app container, and imports what the kit has, nothing else.
 - **The Windows 10 Mobile build** is as committed in its build files; with the sources as they
@@ -91,12 +103,24 @@ bench asks for it ([`d3dcompile.cpp`](d3dcompile.cpp)).
     (1.0.1120.1420) once the build had become one of its own: the copy, the menu, a new game
     and the drive, up to 259 MB (the frame rate of a WARP emulator just started is not a
     phone's: 17 to 23).
-- **Not checked anywhere yet**: Windows Phone 8.1 itself (the trial ran there, the game not
-  yet); the folder picker's way back into the app (nobody taps the emulator's screen:
-  `REVC_PICKED` hands the folder to the same code the activation does, but not through
-  `OnActivated`); the Back key pressed; the share screen; sound heard; the status and navigation
-  bars on an 8.1 phone. Where 8.1's `kernelbase.dll` lacks one of the functions its kit does
-  not list, the log says which fallback was used (the emulator had them all).
+- **On Windows Phone 8.1 itself**, a Lumia 920 (Snapdragon S4 Plus, Adreno 225, 1 GB,
+  768x1280, 8.10.12393.890, 2026-11-21), on USB with the 8.1 SDK's `AppDeployCmd` and `ISETool`
+  (test packages with `REVC_LOG_MIRROR`):
+  - the functions the kit lacks all came from the phone's own `kernelbase.dll`;
+  - the folder picker's real way back: the player picked `Documents\Grand Theft Auto Vice
+    City`, the app was suspended, came back through `OnActivated` and copied 1417 files, 1463 MB,
+    in 212 s;
+  - the menu 8 s after the game's start, a new game and the drive by itself (`REVC_KEYS` with
+    `d`), at 1043x626 (the 626 lines a level-9 GPU gets); suspended and resumed twice; up to
+    302 MB of the 390 MB an app may have there;
+  - frames a second driving, by draws a frame (`w10m/work/elite_windows.py`): first 21.8 at 300
+    draws and 15.4 at 450, with the instance stream; 28.7 and 26.9 by constant buffers, which is
+    what 1.0.1121.1616 chooses on that phone by itself (28.9 and 26.9);
+  - the radar's and the fast car's flicker, gone with the depth buffer kept (the player's eyes
+    on 1.0.1121.1549, after a video of the one before).
+- **Not checked yet**: the Back key, a turn of the phone, sound, the share screen and the
+  status and navigation bars on 8.1 (the Lumia 920 has its keys below the screen); another 8.1
+  phone with the game (an Adreno 305 phone, a Lumia 520 to 630, would take the instance stream).
 
 ## Settings for a test package
 
